@@ -17,12 +17,66 @@ export function VisualizationResult({
   selectedPanel,
   onReset,
 }: VisualizationResultProps) {
-  const handleDownload = () => {
-    const link = document.createElement("a");
-    link.download = `antracit-${selectedPanel.id}-visualization.png`;
-    link.href = visualizedImage;
-    link.click();
-    toast.success("Image downloaded!");
+  const handleDownload = async () => {
+    try {
+      // Convert the PNG data URL to JPG
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = reject;
+        img.src = visualizedImage;
+      });
+
+      // Create a canvas and draw the image
+      const canvas = document.createElement("canvas");
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext("2d")!;
+
+      // Fill with white background (JPG doesn't support transparency)
+      ctx.fillStyle = "#FFFFFF";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
+
+      // Convert canvas to blob directly
+      const blob = await new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob(
+          (b) => {
+            if (b) resolve(b);
+            else reject(new Error("Failed to create blob"));
+          },
+          "image/jpeg",
+          0.92
+        );
+      });
+
+      // Create object URL from blob
+      const blobUrl = URL.createObjectURL(blob);
+      const filename = `antracit-${selectedPanel.id}-visualization.jpg`;
+
+      // Create and trigger download
+      const link = document.createElement("a");
+      link.style.display = "none";
+      link.href = blobUrl;
+      link.download = filename;
+      link.setAttribute("download", filename);
+
+      document.body.appendChild(link);
+      link.click();
+
+      // Cleanup after a delay
+      setTimeout(() => {
+        document.body.removeChild(link);
+        URL.revokeObjectURL(blobUrl);
+      }, 100);
+
+      toast.success("Image downloaded!");
+    } catch (error) {
+      console.error("Download failed:", error);
+      toast.error("Failed to download image");
+    }
   };
 
   const handleShare = async () => {
@@ -53,7 +107,7 @@ export function VisualizationResult({
             Drag the slider to compare before and after
           </p>
         </div>
-        
+
         <div className="flex items-center gap-2">
           <Button variant="minimal" size="sm" onClick={onReset}>
             <RefreshCw className="w-4 h-4 mr-1" />
@@ -77,7 +131,7 @@ export function VisualizationResult({
 
       {/* Panel details card */}
       <div className="flex items-center gap-4 p-4 rounded-xl bg-card border border-border shadow-soft">
-        <div 
+        <div
           className="w-16 h-16 rounded-lg shrink-0"
           style={{
             background: `linear-gradient(135deg, ${selectedPanel.colors[0]} 0%, ${selectedPanel.colors[1]} 100%)`,
