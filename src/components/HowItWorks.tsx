@@ -44,7 +44,7 @@ export function HowItWorks() {
             >
               {/* Connector line (hidden on mobile and last item) */}
               {index < steps.length - 1 && (
-                <div className="hidden lg:block absolute top-10 left-[60%] right-0 h-px bg-border" />
+                <div className="hidden lg:block absolute top-10 left-1/2 w-[calc(100%+2rem)] h-[2px] bg-gradient-to-r from-border/50 via-border to-border/50 -z-10" />
               )}
 
               <div className="relative z-10 mb-6 mx-auto w-20 h-20 rounded-2xl bg-card shadow-soft flex items-center justify-center group-hover:shadow-medium transition-all duration-300 group-hover:scale-105">

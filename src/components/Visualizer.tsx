@@ -5,9 +5,11 @@ import { VisualizationResult } from "./VisualizationResult";
 import { WallPanel } from "@/types/panel";
 import { samplePanels } from "@/data/samplePanels";
 import { PanelCard } from "./PanelCard";
-import { ChevronLeft, ChevronRight, ArrowRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, ArrowRight, Loader2 } from "lucide-react";
 import { Button } from "./ui/button";
 import { cn } from "@/lib/utils";
+import { applyTextureWithMask } from "@/lib/textureUtils";
+import { toast } from "sonner";
 
 type Step = "upload" | "select-wall" | "select-panel" | "result";
 
@@ -17,6 +19,7 @@ export function Visualizer() {
   const [wallMask, setWallMask] = useState<string | null>(null);
   const [selectedPanel, setSelectedPanel] = useState<WallPanel | null>(null);
   const [visualizedImage, setVisualizedImage] = useState<string | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const handleImageUpload = useCallback((imageUrl: string) => {
@@ -41,14 +44,28 @@ export function Visualizer() {
     setSelectedPanel(panel);
   }, []);
 
-  const applyVisualization = useCallback(() => {
-    if (!wallMask || !selectedPanel) return;
+  const applyVisualization = useCallback(async () => {
+    if (!uploadedImage || !wallMask || !selectedPanel) return;
 
-    // For now, we'll use the mask as the result (actual blending would require AI/backend)
-    // In production, this would send to an AI service for proper texture blending
-    setVisualizedImage(wallMask);
-    setStep("result");
-  }, [wallMask, selectedPanel]);
+    setIsProcessing(true);
+    try {
+      // Apply the selected panel texture to the masked wall area
+      const result = await applyTextureWithMask(
+        uploadedImage,
+        wallMask,
+        selectedPanel.textureUrl,
+        selectedPanel.colors
+      );
+      setVisualizedImage(result);
+      setStep("result");
+      toast.success("Visualization complete!");
+    } catch (error) {
+      console.error("Failed to apply visualization:", error);
+      toast.error("Failed to apply visualization. Please try again.");
+    } finally {
+      setIsProcessing(false);
+    }
+  }, [uploadedImage, wallMask, selectedPanel]);
 
   const handleReset = useCallback(() => {
     handleClearImage();
@@ -149,7 +166,7 @@ export function Visualizer() {
                 >
                   <ChevronLeft className="w-4 h-4" />
                 </Button>
-                
+
                 <div
                   ref={scrollRef}
                   className="flex gap-4 overflow-x-auto pb-4 px-8 scrollbar-hide snap-x snap-mandatory"
@@ -178,9 +195,23 @@ export function Visualizer() {
 
               {selectedPanel && (
                 <div className="flex justify-center animate-slide-up">
-                  <Button variant="hero" size="lg" onClick={applyVisualization}>
-                    Apply {selectedPanel.name}
-                    <ArrowRight className="w-4 h-4 ml-2" />
+                  <Button
+                    variant="hero"
+                    size="lg"
+                    onClick={applyVisualization}
+                    disabled={isProcessing}
+                  >
+                    {isProcessing ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Processing...
+                      </>
+                    ) : (
+                      <>
+                        Apply {selectedPanel.name}
+                        <ArrowRight className="w-4 h-4 ml-2" />
+                      </>
+                    )}
                   </Button>
                 </div>
               )}

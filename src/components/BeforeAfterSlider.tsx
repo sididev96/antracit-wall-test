@@ -15,7 +15,7 @@ export function BeforeAfterSlider({ beforeImage, afterImage, className }: Before
 
   const updatePosition = useCallback((clientX: number) => {
     if (!containerRef.current) return;
-    
+
     const rect = containerRef.current.getBoundingClientRect();
     const x = clientX - rect.left;
     const percentage = Math.max(0, Math.min(100, (x / rect.width) * 100));
@@ -55,24 +55,24 @@ export function BeforeAfterSlider({ beforeImage, afterImage, className }: Before
       onMouseLeave={handleMouseUp}
       onClick={handleClick}
     >
-      {/* Before image (full width, clipped) */}
+      {/* After image (full width background) */}
       <div className="absolute inset-0">
         <img
-          src={beforeImage}
-          alt="Before"
+          src={afterImage}
+          alt="After"
           className="w-full h-full object-cover"
           draggable={false}
         />
       </div>
 
-      {/* After image (clipped to slider position) */}
+      {/* Before image (clipped from right based on slider position) */}
       <div
         className="absolute inset-0 overflow-hidden"
-        style={{ clipPath: `inset(0 ${100 - sliderPosition}% 0 0)` }}
+        style={{ clipPath: `inset(0 0 0 ${sliderPosition}%)` }}
       >
         <img
-          src={afterImage}
-          alt="After"
+          src={beforeImage}
+          alt="Before"
           className="w-full h-full object-cover"
           draggable={false}
         />
@@ -94,10 +94,10 @@ export function BeforeAfterSlider({ beforeImage, afterImage, className }: Before
 
       {/* Labels */}
       <div className="absolute bottom-4 left-4 px-3 py-1.5 rounded-full bg-anthracite/80 backdrop-blur-sm text-primary-foreground text-xs font-medium">
-        Before
+        After
       </div>
       <div className="absolute bottom-4 right-4 px-3 py-1.5 rounded-full bg-anthracite/80 backdrop-blur-sm text-primary-foreground text-xs font-medium">
-        After
+        Before
       </div>
     </div>
   );

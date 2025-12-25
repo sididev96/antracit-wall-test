@@ -1,9 +1,13 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Pencil, Eraser, RotateCcw, Wand2, Check } from "lucide-react";
+import { Undo2, RotateCcw, Check, MousePointer, Trash2 } from "lucide-react";
 import { Button } from "./ui/button";
-import { Slider } from "./ui/slider";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+
+interface Point {
+  x: number;
+  y: number;
+}
 
 interface WallSelectorProps {
   imageUrl: string;
@@ -12,11 +16,11 @@ interface WallSelectorProps {
 
 export function WallSelector({ imageUrl, onMaskComplete }: WallSelectorProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [isDrawing, setIsDrawing] = useState(false);
-  const [tool, setTool] = useState<"draw" | "erase">("draw");
-  const [brushSize, setBrushSize] = useState(30);
+  const [points, setPoints] = useState<Point[]>([]);
   const [imageLoaded, setImageLoaded] = useState(false);
+  const [isPolygonClosed, setIsPolygonClosed] = useState(false);
   const imageRef = useRef<HTMLImageElement | null>(null);
+  const canvasDimensions = useRef<{ width: number; height: number }>({ width: 800, height: 600 });
 
   // Initialize canvas with the image
   useEffect(() => {
@@ -34,7 +38,8 @@ export function WallSelector({ imageUrl, onMaskComplete }: WallSelectorProps) {
       const scale = Math.min(1, maxWidth / img.width);
       canvas.width = img.width * scale;
       canvas.height = img.height * scale;
-      
+      canvasDimensions.current = { width: canvas.width, height: canvas.height };
+
       // Draw the image
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
       imageRef.current = img;
@@ -42,6 +47,66 @@ export function WallSelector({ imageUrl, onMaskComplete }: WallSelectorProps) {
     };
     img.src = imageUrl;
   }, [imageUrl]);
+
+  // Redraw canvas whenever points change
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext("2d");
+    if (!ctx || !imageRef.current || !imageLoaded) return;
+
+    // Clear and redraw the image
+    ctx.drawImage(imageRef.current, 0, 0, canvas!.width, canvas!.height);
+
+    if (points.length === 0) return;
+
+    // Draw the polygon
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+
+    for (let i = 1; i < points.length; i++) {
+      ctx.lineTo(points[i].x, points[i].y);
+    }
+
+    if (isPolygonClosed && points.length > 2) {
+      ctx.closePath();
+      // Fill with semi-transparent overlay
+      ctx.fillStyle = "rgba(50, 50, 50, 0.4)";
+      ctx.fill();
+    }
+
+    // Draw the stroke
+    ctx.strokeStyle = "#333";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Draw points
+    points.forEach((point, index) => {
+      ctx.beginPath();
+      ctx.arc(point.x, point.y, 6, 0, Math.PI * 2);
+
+      // First point is special (closing point)
+      if (index === 0 && points.length > 2 && !isPolygonClosed) {
+        ctx.fillStyle = "#22c55e"; // Green for the closing point
+      } else {
+        ctx.fillStyle = "#333";
+      }
+      ctx.fill();
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    });
+
+    // Draw connection line to first point if we have enough points
+    if (points.length > 2 && !isPolygonClosed) {
+      ctx.setLineDash([5, 5]);
+      ctx.beginPath();
+      ctx.moveTo(points[points.length - 1].x, points[points.length - 1].y);
+      ctx.lineTo(points[0].x, points[0].y);
+      ctx.strokeStyle = "rgba(50, 50, 50, 0.5)";
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }, [points, isPolygonClosed, imageLoaded]);
 
   const getCoordinates = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     const canvas = canvasRef.current;
@@ -63,127 +128,124 @@ export function WallSelector({ imageUrl, onMaskComplete }: WallSelectorProps) {
     };
   }, []);
 
-  const draw = useCallback((e: React.MouseEvent | React.TouchEvent) => {
-    if (!isDrawing) return;
-    
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext("2d");
-    if (!ctx) return;
+  const isNearFirstPoint = useCallback((point: Point) => {
+    if (points.length < 3) return false;
+    const firstPoint = points[0];
+    const distance = Math.sqrt(
+      Math.pow(point.x - firstPoint.x, 2) + Math.pow(point.y - firstPoint.y, 2)
+    );
+    return distance < 15; // 15px threshold
+  }, [points]);
 
-    const { x, y } = getCoordinates(e);
+  const handleCanvasClick = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    if (isPolygonClosed) return; // Don't add more points if polygon is closed
 
-    ctx.beginPath();
-    ctx.arc(x, y, brushSize / 2, 0, Math.PI * 2);
-    
-    if (tool === "draw") {
-      ctx.fillStyle = "rgba(50, 50, 50, 0.5)";
-      ctx.fill();
-    } else {
-      // Restore original image in erased area
-      if (imageRef.current) {
-        ctx.save();
-        ctx.clip();
-        ctx.drawImage(imageRef.current, 0, 0, canvas!.width, canvas!.height);
-        ctx.restore();
-      }
+    const coords = getCoordinates(e);
+
+    // Check if clicking near the first point to close the polygon
+    if (isNearFirstPoint(coords)) {
+      setIsPolygonClosed(true);
+      toast.success("Wall area selected! Click confirm to continue.");
+      return;
     }
-  }, [isDrawing, brushSize, tool, getCoordinates]);
 
-  const startDrawing = useCallback((e: React.MouseEvent | React.TouchEvent) => {
-    setIsDrawing(true);
-    draw(e);
-  }, [draw]);
+    setPoints(prev => [...prev, coords]);
+  }, [getCoordinates, isNearFirstPoint, isPolygonClosed]);
 
-  const stopDrawing = useCallback(() => {
-    setIsDrawing(false);
-  }, []);
+  const undoLastPoint = useCallback(() => {
+    if (isPolygonClosed) {
+      setIsPolygonClosed(false);
+    } else {
+      setPoints(prev => prev.slice(0, -1));
+    }
+  }, [isPolygonClosed]);
 
   const resetCanvas = useCallback(() => {
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext("2d");
-    if (!ctx || !imageRef.current) return;
-
-    ctx.drawImage(imageRef.current, 0, 0, canvas!.width, canvas!.height);
-    toast.info("Canvas reset");
-  }, []);
-
-  const autoDetect = useCallback(() => {
-    toast.info("AI wall detection coming soon! For now, draw on the wall area manually.");
+    setPoints([]);
+    setIsPolygonClosed(false);
+    toast.info("Selection cleared");
   }, []);
 
   const confirmSelection = useCallback(() => {
+    if (points.length < 3) {
+      toast.error("Please select at least 3 points to form a wall area");
+      return;
+    }
+
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    onMaskComplete(canvas.toDataURL("image/png"));
-    toast.success("Wall area selected!");
-  }, [onMaskComplete]);
+    // Pass polygon data as JSON (points + canvas dimensions)
+    // This allows the texture utility to use canvas clipping for precise filling
+    const polygonData = {
+      points: points,
+      canvasWidth: canvas.width,
+      canvasHeight: canvas.height
+    };
+
+    onMaskComplete(JSON.stringify(polygonData));
+    toast.success("Wall area confirmed!");
+  }, [points, onMaskComplete]);
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface-elevated shadow-soft text-sm text-muted-foreground">
+            <MousePointer className="w-4 h-4" />
+            <span>{points.length} points</span>
+          </div>
           <Button
-            variant={tool === "draw" ? "hero" : "minimal"}
+            variant="minimal"
             size="sm"
-            onClick={() => setTool("draw")}
+            onClick={undoLastPoint}
+            disabled={points.length === 0}
           >
-            <Pencil className="w-4 h-4 mr-1" />
-            Draw
-          </Button>
-          <Button
-            variant={tool === "erase" ? "hero" : "minimal"}
-            size="sm"
-            onClick={() => setTool("erase")}
-          >
-            <Eraser className="w-4 h-4 mr-1" />
-            Erase
+            <Undo2 className="w-4 h-4 mr-1" />
+            Undo
           </Button>
           <Button variant="minimal" size="sm" onClick={resetCanvas}>
             <RotateCcw className="w-4 h-4 mr-1" />
             Reset
           </Button>
         </div>
-        
-        <div className="flex items-center gap-2">
-          <Button variant="secondary" size="sm" onClick={autoDetect}>
-            <Wand2 className="w-4 h-4 mr-1" />
-            Auto-Detect
-          </Button>
-          <Button variant="hero" size="sm" onClick={confirmSelection}>
-            <Check className="w-4 h-4 mr-1" />
-            Confirm
-          </Button>
-        </div>
+
+        <Button
+          variant="hero"
+          size="sm"
+          onClick={confirmSelection}
+          disabled={points.length < 3}
+        >
+          <Check className="w-4 h-4 mr-1" />
+          Confirm
+        </Button>
       </div>
 
-      {/* Brush size slider */}
-      <div className="flex items-center gap-4 px-2">
-        <span className="text-sm text-muted-foreground min-w-fit">Brush: {brushSize}px</span>
-        <Slider
-          value={[brushSize]}
-          onValueChange={([value]) => setBrushSize(value)}
-          min={10}
-          max={100}
-          step={5}
-          className="flex-1 max-w-48"
-        />
+      {/* Instructions */}
+      <div className="text-center py-2 px-4 rounded-lg bg-muted/50">
+        {!isPolygonClosed ? (
+          <p className="text-sm text-muted-foreground">
+            {points.length === 0 && "Click on the image to place points around the wall area"}
+            {points.length > 0 && points.length < 3 && `Place ${3 - points.length} more point${3 - points.length > 1 ? 's' : ''} to form a shape`}
+            {points.length >= 3 && "Click near the first point (green) to close the shape, or continue adding points"}
+          </p>
+        ) : (
+          <p className="text-sm text-green-600 font-medium">
+            ✓ Shape complete! Click "Confirm" to proceed or "Reset" to start over
+          </p>
+        )}
       </div>
 
       {/* Canvas */}
       <div className="relative rounded-2xl overflow-hidden bg-muted shadow-medium">
         <canvas
           ref={canvasRef}
-          onMouseDown={startDrawing}
-          onMouseMove={draw}
-          onMouseUp={stopDrawing}
-          onMouseLeave={stopDrawing}
-          onTouchStart={startDrawing}
-          onTouchMove={draw}
-          onTouchEnd={stopDrawing}
+          onClick={handleCanvasClick}
+          onTouchEnd={handleCanvasClick}
           className={cn(
             "w-full h-auto cursor-crosshair touch-none",
-            !imageLoaded && "opacity-0"
+            !imageLoaded && "opacity-0",
+            isPolygonClosed && "cursor-default"
           )}
         />
         {!imageLoaded && (
@@ -192,10 +254,6 @@ export function WallSelector({ imageUrl, onMaskComplete }: WallSelectorProps) {
           </div>
         )}
       </div>
-
-      <p className="text-sm text-muted-foreground text-center">
-        Draw over the wall area you want to apply the panel to. Use erase to correct mistakes.
-      </p>
     </div>
   );
 }
