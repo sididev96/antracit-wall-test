@@ -131,12 +131,13 @@ export function VisualizationResult({
 
       {/* Panel details card */}
       <div className="flex items-center gap-4 p-4 rounded-xl bg-card border border-border shadow-soft">
-        <div
-          className="w-16 h-16 rounded-lg shrink-0"
-          style={{
-            background: `linear-gradient(135deg, ${selectedPanel.colors[0]} 0%, ${selectedPanel.colors[1]} 100%)`,
-          }}
-        />
+        <div className="w-16 h-16 rounded-lg shrink-0 overflow-hidden bg-muted">
+          <img
+            src={selectedPanel.imageUrl}
+            alt={selectedPanel.name}
+            className="w-full h-full object-cover"
+          />
+        </div>
         <div className="flex-1 min-w-0">
           <h4 className="font-semibold text-foreground">{selectedPanel.name}</h4>
           <p className="text-sm text-muted-foreground">{selectedPanel.material} • {selectedPanel.category}</p>

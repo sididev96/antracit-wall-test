@@ -1,11 +1,10 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { ImageUploader } from "./ImageUploader";
 import { WallSelector } from "./WallSelector";
 import { VisualizationResult } from "./VisualizationResult";
+import { PanelSelector } from "./PanelSelector";
 import { WallPanel } from "@/types/panel";
-import { samplePanels } from "@/data/samplePanels";
-import { PanelCard } from "./PanelCard";
-import { ChevronLeft, ChevronRight, ArrowRight, Loader2 } from "lucide-react";
+import { ArrowRight, Loader2, ChevronRight } from "lucide-react";
 import { Button } from "./ui/button";
 import { cn } from "@/lib/utils";
 import { applyTextureWithMask } from "@/lib/textureUtils";
@@ -20,7 +19,6 @@ export function Visualizer() {
   const [selectedPanel, setSelectedPanel] = useState<WallPanel | null>(null);
   const [visualizedImage, setVisualizedImage] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
 
   const handleImageUpload = useCallback((imageUrl: string) => {
     setUploadedImage(imageUrl);
@@ -40,45 +38,48 @@ export function Visualizer() {
     setStep("select-panel");
   }, []);
 
-  const handleSelectPanel = useCallback((panel: WallPanel) => {
-    setSelectedPanel(panel);
-  }, []);
-
-  const applyVisualization = useCallback(async () => {
-    if (!uploadedImage || !wallMask || !selectedPanel) return;
+  const applyVisualization = useCallback(async (panel: WallPanel) => {
+    if (!uploadedImage || !wallMask) return;
 
     setIsProcessing(true);
     try {
-      // Apply the selected panel texture to the masked wall area
       const result = await applyTextureWithMask(
         uploadedImage,
         wallMask,
-        selectedPanel.textureUrl,
-        selectedPanel.colors
+        panel.textureUrl,
+        panel.colors
       );
       setVisualizedImage(result);
       setStep("result");
-      toast.success("Visualization complete!");
+      if (step !== "result") {
+        toast.success("Visualization complete!");
+      }
     } catch (error) {
       console.error("Failed to apply visualization:", error);
       toast.error("Failed to apply visualization. Please try again.");
     } finally {
       setIsProcessing(false);
     }
-  }, [uploadedImage, wallMask, selectedPanel]);
+  }, [uploadedImage, wallMask, step]);
+
+  const handleSelectPanel = useCallback((panel: WallPanel) => {
+    setSelectedPanel(panel);
+
+    // If we are already in the result view, apply immediately
+    if (step === "result") {
+      applyVisualization(panel);
+    }
+  }, [step, applyVisualization]);
+
+  const handleApplyClick = useCallback(() => {
+    if (selectedPanel) {
+      applyVisualization(selectedPanel);
+    }
+  }, [selectedPanel, applyVisualization]);
 
   const handleReset = useCallback(() => {
     handleClearImage();
   }, [handleClearImage]);
-
-  const scrollPanels = (direction: "left" | "right") => {
-    if (!scrollRef.current) return;
-    const scrollAmount = 300;
-    scrollRef.current.scrollBy({
-      left: direction === "left" ? -scrollAmount : scrollAmount,
-      behavior: "smooth",
-    });
-  };
 
   const steps = [
     { key: "upload", label: "Upload Photo" },
@@ -156,49 +157,17 @@ export function Visualizer() {
                 </p>
               </div>
 
-              {/* Horizontal scrollable panel selector */}
-              <div className="relative">
-                <Button
-                  variant="minimal"
-                  size="icon"
-                  className="absolute left-0 top-1/2 -translate-y-1/2 z-10 bg-card/90 backdrop-blur-sm shadow-soft hidden sm:flex"
-                  onClick={() => scrollPanels("left")}
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                </Button>
-
-                <div
-                  ref={scrollRef}
-                  className="flex gap-4 overflow-x-auto pb-4 px-8 scrollbar-hide snap-x snap-mandatory"
-                  style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
-                >
-                  {samplePanels.map((panel) => (
-                    <div key={panel.id} className="w-64 shrink-0 snap-start">
-                      <PanelCard
-                        panel={panel}
-                        isSelected={selectedPanel?.id === panel.id}
-                        onSelect={handleSelectPanel}
-                      />
-                    </div>
-                  ))}
-                </div>
-
-                <Button
-                  variant="minimal"
-                  size="icon"
-                  className="absolute right-0 top-1/2 -translate-y-1/2 z-10 bg-card/90 backdrop-blur-sm shadow-soft hidden sm:flex"
-                  onClick={() => scrollPanels("right")}
-                >
-                  <ChevronRight className="w-4 h-4" />
-                </Button>
-              </div>
+              <PanelSelector
+                selectedPanel={selectedPanel}
+                onSelect={handleSelectPanel}
+              />
 
               {selectedPanel && (
                 <div className="flex justify-center animate-slide-up">
                   <Button
                     variant="hero"
                     size="lg"
-                    onClick={applyVisualization}
+                    onClick={handleApplyClick}
                     disabled={isProcessing}
                   >
                     {isProcessing ? (
@@ -219,12 +188,28 @@ export function Visualizer() {
           )}
 
           {step === "result" && uploadedImage && visualizedImage && selectedPanel && (
-            <VisualizationResult
-              originalImage={uploadedImage}
-              visualizedImage={visualizedImage}
-              selectedPanel={selectedPanel}
-              onReset={handleReset}
-            />
+            <div className="space-y-8">
+              <div className={cn("transition-opacity duration-300", isProcessing ? "opacity-50 pointer-events-none" : "opacity-100")}>
+                <VisualizationResult
+                  originalImage={uploadedImage}
+                  visualizedImage={visualizedImage}
+                  selectedPanel={selectedPanel}
+                  onReset={handleReset}
+                />
+              </div>
+
+              <div className="space-y-6 pt-8 border-t border-border/50">
+                <div className="text-center">
+                  <p className="text-sm font-semibold text-foreground tracking-wider uppercase">
+                    Switch Panel Style
+                  </p>
+                </div>
+                <PanelSelector
+                  selectedPanel={selectedPanel}
+                  onSelect={handleSelectPanel}
+                />
+              </div>
+            </div>
           )}
         </div>
       </div>
