@@ -1,4 +1,4 @@
-import { ArrowDown, Sparkles } from "lucide-react";
+import { ArrowDown, Sparkles, ArrowRight, LayoutGrid } from "lucide-react";
 import { Button } from "./ui/button";
 
 export function Hero() {
@@ -27,13 +27,15 @@ export function Hero() {
           </p>
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-            <Button variant="hero" size="xl" asChild>
+            <Button variant="hero" size="xl" className="group" asChild>
               <a href="#visualizer">
                 Start Visualizing
+                <ArrowRight className="w-5 h-5 ml-2 transition-transform group-hover:translate-x-1" />
               </a>
             </Button>
-            <Button variant="minimal" size="xl" asChild>
+            <Button variant="minimal" size="xl" className="bg-secondary border-secondary-foreground/10 hover:bg-secondary/80 shadow-sm" asChild>
               <a href="#catalog">
+                <LayoutGrid className="w-5 h-5 mr-2" />
                 Browse Catalog
               </a>
             </Button>

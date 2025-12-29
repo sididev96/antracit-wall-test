@@ -47,7 +47,7 @@ export function BeforeAfterSlider({ beforeImage, afterImage, className }: Before
     <div
       ref={containerRef}
       className={cn(
-        "relative w-full aspect-video rounded-2xl overflow-hidden cursor-ew-resize select-none shadow-medium",
+        "relative w-full rounded-2xl overflow-hidden cursor-ew-resize select-none shadow-medium",
         className
       )}
       onMouseMove={handleMouseMove}
@@ -55,24 +55,24 @@ export function BeforeAfterSlider({ beforeImage, afterImage, className }: Before
       onMouseLeave={handleMouseUp}
       onClick={handleClick}
     >
-      {/* After image (full width background) */}
-      <div className="absolute inset-0">
+      {/* Before image (establishes height) */}
+      <div className="relative w-full">
         <img
-          src={afterImage}
-          alt="After"
-          className="w-full h-full object-cover"
+          src={beforeImage}
+          alt="Before"
+          className="w-full h-auto block"
           draggable={false}
         />
       </div>
 
-      {/* Before image (clipped from right based on slider position) */}
+      {/* After image (clipped from left based on slider position) */}
       <div
         className="absolute inset-0 overflow-hidden"
         style={{ clipPath: `inset(0 0 0 ${sliderPosition}%)` }}
       >
         <img
-          src={beforeImage}
-          alt="Before"
+          src={afterImage}
+          alt="After"
           className="w-full h-full object-cover"
           draggable={false}
         />
@@ -94,10 +94,10 @@ export function BeforeAfterSlider({ beforeImage, afterImage, className }: Before
 
       {/* Labels */}
       <div className="absolute bottom-4 left-4 px-3 py-1.5 rounded-full bg-anthracite/80 backdrop-blur-sm text-primary-foreground text-xs font-medium">
-        After
+        Before
       </div>
       <div className="absolute bottom-4 right-4 px-3 py-1.5 rounded-full bg-anthracite/80 backdrop-blur-sm text-primary-foreground text-xs font-medium">
-        Before
+        After
       </div>
     </div>
   );
