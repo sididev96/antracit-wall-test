@@ -1,9 +1,22 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Undo2, RotateCcw, Check, MousePointer, Trash2, Wand2, Loader2 } from "lucide-react";
+import {
+  Undo2,
+  RotateCcw,
+  Check,
+  MousePointer,
+  Trash2,
+  Wand2,
+  Loader2,
+} from "lucide-react";
 import { Button } from "./ui/button";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import { initializeSAM, generateEmbedding, predictMask, maskToPolygon } from "@/lib/samService";
+import {
+  initializeSAM,
+  generateEmbedding,
+  predictMask,
+  maskToPolygon,
+} from "@/lib/samService";
 
 interface Point {
   x: number;
@@ -23,7 +36,10 @@ export function WallSelector({ imageUrl, onMaskComplete }: WallSelectorProps) {
   const [isModelLoading, setIsModelLoading] = useState(false);
   const [isDetecting, setIsDetecting] = useState(false);
   const imageRef = useRef<HTMLImageElement | null>(null);
-  const canvasDimensions = useRef<{ width: number; height: number }>({ width: 800, height: 600 });
+  const canvasDimensions = useRef<{ width: number; height: number }>({
+    width: 800,
+    height: 600,
+  });
 
   // Initialize canvas with the image
   useEffect(() => {
@@ -111,55 +127,65 @@ export function WallSelector({ imageUrl, onMaskComplete }: WallSelectorProps) {
     }
   }, [points, isPolygonClosed, imageLoaded]);
 
-  const getCoordinates = useCallback((e: React.MouseEvent | React.TouchEvent) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return { x: 0, y: 0 };
+  const getCoordinates = useCallback(
+    (e: React.MouseEvent | React.TouchEvent) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return { x: 0, y: 0 };
 
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
 
-    if ("touches" in e) {
+      if ("touches" in e) {
+        return {
+          x: (e.touches[0].clientX - rect.left) * scaleX,
+          y: (e.touches[0].clientY - rect.top) * scaleY,
+        };
+      }
       return {
-        x: (e.touches[0].clientX - rect.left) * scaleX,
-        y: (e.touches[0].clientY - rect.top) * scaleY,
+        x: (e.clientX - rect.left) * scaleX,
+        y: (e.clientY - rect.top) * scaleY,
       };
-    }
-    return {
-      x: (e.clientX - rect.left) * scaleX,
-      y: (e.clientY - rect.top) * scaleY,
-    };
-  }, []);
+    },
+    []
+  );
 
-  const isNearFirstPoint = useCallback((point: Point) => {
-    if (points.length < 3) return false;
-    const firstPoint = points[0];
-    const distance = Math.sqrt(
-      Math.pow(point.x - firstPoint.x, 2) + Math.pow(point.y - firstPoint.y, 2)
-    );
-    return distance < 15; // 15px threshold
-  }, [points]);
+  const isNearFirstPoint = useCallback(
+    (point: Point) => {
+      if (points.length < 3) return false;
+      const firstPoint = points[0];
+      const distance = Math.sqrt(
+        Math.pow(point.x - firstPoint.x, 2) +
+          Math.pow(point.y - firstPoint.y, 2)
+      );
+      return distance < 15; // 15px threshold
+    },
+    [points]
+  );
 
-  const handleCanvasClick = useCallback((e: React.MouseEvent | React.TouchEvent) => {
-    if (isPolygonClosed) return; // Don't add more points if polygon is closed
+  const handleCanvasClick = useCallback(
+    (e: React.MouseEvent | React.TouchEvent) => {
+      if (isPolygonClosed) return; // Don't add more points if polygon is closed
 
-    const coords = getCoordinates(e);
+      const coords = getCoordinates(e);
 
-    // Check if clicking near the first point to close the polygon
-    if (isNearFirstPoint(coords)) {
-      setIsPolygonClosed(true);
-      toast.success("Wall area selected! Click confirm to continue.");
-      return;
-    }
+      // Check if clicking near the first point to close the polygon
+      if (isNearFirstPoint(coords)) {
+        setIsPolygonClosed(true);
+        toast.success("Wall area selected! Click confirm to continue.");
+        return;
+      }
 
-    setPoints(prev => [...prev, coords]);
-  }, [getCoordinates, isNearFirstPoint, isPolygonClosed]);
+      setPoints((prev) => [...prev, coords]);
+    },
+    [getCoordinates, isNearFirstPoint, isPolygonClosed]
+  );
 
   const undoLastPoint = useCallback(() => {
     if (isPolygonClosed) {
       setIsPolygonClosed(false);
     } else {
-      setPoints(prev => prev.slice(0, -1));
+      setPoints((prev) => prev.slice(0, -1));
     }
   }, [isPolygonClosed]);
 
@@ -202,7 +228,7 @@ export function WallSelector({ imageUrl, onMaskComplete }: WallSelectorProps) {
         // Scale points to canvas dimensions
         const scaleX = canvasDimensions.current.width / imageSize.width;
         const scaleY = canvasDimensions.current.height / imageSize.height;
-        const scaledPoints = polygonPoints.map(p => ({
+        const scaledPoints = polygonPoints.map((p) => ({
           x: p.x * scaleX,
           y: p.y * scaleY,
         }));
@@ -236,7 +262,7 @@ export function WallSelector({ imageUrl, onMaskComplete }: WallSelectorProps) {
     const polygonData = {
       points: points,
       canvasWidth: canvas.width,
-      canvasHeight: canvas.height
+      canvasHeight: canvas.height,
     };
 
     onMaskComplete(JSON.stringify(polygonData));
@@ -304,13 +330,20 @@ export function WallSelector({ imageUrl, onMaskComplete }: WallSelectorProps) {
       <div className="text-center py-2 px-4 rounded-lg bg-muted/50">
         {!isPolygonClosed ? (
           <p className="text-sm text-muted-foreground">
-            {points.length === 0 && "Click on the image to place points around the wall area"}
-            {points.length > 0 && points.length < 3 && `Place ${3 - points.length} more point${3 - points.length > 1 ? 's' : ''} to form a shape`}
-            {points.length >= 3 && "Click near the first point (green) to close the shape, or continue adding points"}
+            {points.length === 0 &&
+              "Click on the image to place points around the wall area"}
+            {points.length > 0 &&
+              points.length < 3 &&
+              `Place ${3 - points.length} more point${
+                3 - points.length > 1 ? "s" : ""
+              } to form a shape`}
+            {points.length >= 3 &&
+              "Click near the first point (green) to close the shape, or continue adding points"}
           </p>
         ) : (
           <p className="text-sm text-green-600 font-medium">
-            ✓ Shape complete! Click "Confirm" to proceed or "Reset" to start over
+            ✓ Shape complete! Click "Confirm" to proceed or "Reset" to start
+            over
           </p>
         )}
       </div>
