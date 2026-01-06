@@ -1,8 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { Undo2, RotateCcw, Check, MousePointer, Trash2 } from "lucide-react";
+import { Undo2, RotateCcw, Check, MousePointer, Trash2, Wand2, Loader2 } from "lucide-react";
 import { Button } from "./ui/button";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { initializeSAM, generateEmbedding, predictMask, maskToPolygon } from "@/lib/samService";
 
 interface Point {
   x: number;
@@ -19,6 +20,8 @@ export function WallSelector({ imageUrl, onMaskComplete }: WallSelectorProps) {
   const [points, setPoints] = useState<Point[]>([]);
   const [imageLoaded, setImageLoaded] = useState(false);
   const [isPolygonClosed, setIsPolygonClosed] = useState(false);
+  const [isModelLoading, setIsModelLoading] = useState(false);
+  const [isDetecting, setIsDetecting] = useState(false);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const canvasDimensions = useRef<{ width: number; height: number }>({ width: 800, height: 600 });
 
@@ -166,6 +169,59 @@ export function WallSelector({ imageUrl, onMaskComplete }: WallSelectorProps) {
     toast.info("Selection cleared");
   }, []);
 
+  // Auto-detect wall using SAM
+  const handleAutoDetect = useCallback(async () => {
+    if (!imageLoaded || !canvasDimensions.current) return;
+
+    try {
+      setIsModelLoading(true);
+      toast.info("Loading AI model... This may take a moment on first use.");
+      await initializeSAM();
+      setIsModelLoading(false);
+
+      setIsDetecting(true);
+      toast.info("Analyzing image...");
+
+      // Generate embedding and get raw image
+      const { rawImage, imageSize } = await generateEmbedding(imageUrl);
+
+      // Use center point as initial prompt for wall detection
+      const centerX = imageSize.width / 2;
+      const centerY = imageSize.height / 2;
+      const mask = await predictMask(
+        rawImage,
+        [{ x: centerX, y: centerY }],
+        [1], // 1 = foreground
+        imageSize
+      );
+
+      // Convert mask to polygon points
+      const polygonPoints = maskToPolygon(mask, 3);
+
+      if (polygonPoints.length >= 3) {
+        // Scale points to canvas dimensions
+        const scaleX = canvasDimensions.current.width / imageSize.width;
+        const scaleY = canvasDimensions.current.height / imageSize.height;
+        const scaledPoints = polygonPoints.map(p => ({
+          x: p.x * scaleX,
+          y: p.y * scaleY,
+        }));
+
+        setPoints(scaledPoints);
+        setIsPolygonClosed(true);
+        toast.success("Wall detected! Adjust points if needed, then confirm.");
+      } else {
+        toast.warning("Could not detect a clear wall. Please select manually.");
+      }
+    } catch (error) {
+      console.error("Auto-detection failed:", error);
+      toast.error("Detection failed. Please select the wall manually.");
+    } finally {
+      setIsModelLoading(false);
+      setIsDetecting(false);
+    }
+  }, [imageUrl, imageLoaded]);
+
   const confirmSelection = useCallback(() => {
     if (points.length < 3) {
       toast.error("Please select at least 3 points to form a wall area");
@@ -207,6 +263,29 @@ export function WallSelector({ imageUrl, onMaskComplete }: WallSelectorProps) {
           <Button variant="minimal" size="sm" onClick={resetCanvas}>
             <RotateCcw className="w-4 h-4 mr-1" />
             Reset
+          </Button>
+          <Button
+            variant="minimal"
+            size="sm"
+            onClick={handleAutoDetect}
+            disabled={isModelLoading || isDetecting || isPolygonClosed}
+          >
+            {isModelLoading ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                Loading AI...
+              </>
+            ) : isDetecting ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                Detecting...
+              </>
+            ) : (
+              <>
+                <Wand2 className="w-4 h-4 mr-1" />
+                Auto-Detect
+              </>
+            )}
           </Button>
         </div>
 
