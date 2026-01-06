@@ -1,8 +1,10 @@
-import { Download, Share2, RefreshCw } from "lucide-react";
+import { useState } from "react";
+import { Download, Share2, RefreshCw, Split, Image as ImageIcon } from "lucide-react";
 import { Button } from "./ui/button";
 import { BeforeAfterSlider } from "./BeforeAfterSlider";
 import { WallPanel } from "@/types/panel";
 import { toast } from "sonner";
+import { cn } from "@/lib/utils";
 
 interface VisualizationResultProps {
   originalImage: string;
@@ -17,6 +19,8 @@ export function VisualizationResult({
   selectedPanel,
   onReset,
 }: VisualizationResultProps) {
+  const [showComparison, setShowComparison] = useState(false);
+
   const handleDownload = async () => {
     try {
       // Convert the PNG data URL to JPG
@@ -104,11 +108,34 @@ export function VisualizationResult({
             Your Room with {selectedPanel.name}
           </h3>
           <p className="text-muted-foreground text-sm">
-            Drag the slider to compare before and after
+            {showComparison
+              ? "Drag the slider to compare before and after"
+              : "Showing the final visualization of your room"}
           </p>
         </div>
 
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowComparison(!showComparison)}
+            className={cn(
+              "transition-all duration-300",
+              showComparison ? "bg-anthracite text-white hover:bg-anthracite/90" : ""
+            )}
+          >
+            {showComparison ? (
+              <>
+                <ImageIcon className="w-4 h-4 mr-1" />
+                Show "After" Only
+              </>
+            ) : (
+              <>
+                <Split className="w-4 h-4 mr-1" />
+                Compare Before/After
+              </>
+            )}
+          </Button>
           <Button variant="minimal" size="sm" onClick={onReset}>
             <RefreshCw className="w-4 h-4 mr-1" />
             Try Another
@@ -124,10 +151,23 @@ export function VisualizationResult({
         </div>
       </div>
 
-      <BeforeAfterSlider
-        beforeImage={originalImage}
-        afterImage={visualizedImage}
-      />
+      {showComparison ? (
+        <BeforeAfterSlider
+          beforeImage={originalImage}
+          afterImage={visualizedImage}
+        />
+      ) : (
+        <div className="relative w-full rounded-2xl overflow-hidden shadow-medium animate-fade-in">
+          <img
+            src={visualizedImage}
+            alt="Visualization Result"
+            className="w-full h-auto block"
+          />
+          <div className="absolute bottom-4 right-4 px-3 py-1.5 rounded-full bg-anthracite/80 backdrop-blur-sm text-primary-foreground text-xs font-medium">
+            After
+          </div>
+        </div>
+      )}
 
       {/* Panel details card */}
       <div className="flex items-center gap-4 p-4 rounded-xl bg-card border border-border shadow-soft">
