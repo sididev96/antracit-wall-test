@@ -256,7 +256,8 @@ export async function applyTextureWithDepthMask(
 
   // Convert gradients to perspective scale factors
   // Larger gradient = more perspective distortion
-  const perspectiveStrength = 2.0;
+  // Reduced strength to prevent wobbling
+  const perspectiveStrength = 0.8;
   const baseScale = 1.0;
 
   // Process each pixel
@@ -292,13 +293,23 @@ export async function applyTextureWithDepthMask(
         const normalizedY = y / canvas.height;
 
         // Compute perspective-adjusted texture coordinates
-        const tiltOffsetX = avgGradX * (normalizedX - 0.5) * canvas.width * 0.5;
-        const tiltOffsetY =
-          avgGradY * (normalizedY - 0.5) * canvas.height * 0.5;
+        // Use a stable reference point (center of image) to prevent wobbling
+        const centerX = canvas.width * 0.5;
+        const centerY = canvas.height * 0.5;
+        
+        // Calculate offset from center in texture space
+        const offsetX = x - centerX;
+        const offsetY = y - centerY;
+        
+        // Apply perspective tilt with reduced strength for stability
+        const tiltStrength = 0.3; // Reduced from implicit 0.5
+        const tiltOffsetX = avgGradX * offsetX * tiltStrength;
+        const tiltOffsetY = avgGradY * offsetY * tiltStrength;
 
         // Calculate texture coordinates with perspective
-        let texX = (x + tiltOffsetX) * depthScale;
-        let texY = (y + tiltOffsetY) * depthScale;
+        // Apply depth scale to base coordinates, then add tilt
+        let texX = x * depthScale + tiltOffsetX;
+        let texY = y * depthScale + tiltOffsetY;
 
         // Wrap texture coordinates for tiling
         texX = ((texX % texWidth) + texWidth) % texWidth;
@@ -529,15 +540,16 @@ export async function applyTextureToWallMask(
       if (wallMask[maskIdx] > 0) {
         const pixelIndex = (y * imgWidth + x) * 4;
 
-        // Calculate texture coordinates with tiling
+        // Calculate base texture coordinates with tiling
         let texX = (x / tileWidth) * texWidth;
         let texY = (y / tileHeight) * texHeight;
 
-        // Apply perspective distortion based on depth
+        // Apply perspective distortion based on depth - with reduced strength
         if (applyPerspective && hasDepth) {
           const depth = getDepthAt(x, y);
           const depthOffset = depth - avgWallDepth;
-          const perspectiveScale = 1.0 + depthOffset * 0.5;
+          // Reduced perspective strength from 0.5 to 0.2 for stability
+          const perspectiveScale = 1.0 + depthOffset * 0.2;
           texX *= perspectiveScale;
           texY *= perspectiveScale;
         }

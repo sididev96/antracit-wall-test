@@ -21,7 +21,7 @@ export function PanelCard({ panel, isSelected, onSelect }: PanelCardProps) {
       )}
     >
       {/* Panel texture preview */}
-      <div className="aspect-[4/3] relative overflow-hidden bg-muted">
+      <div className="aspect-square relative overflow-hidden bg-muted">
         <img
           src={panel.imageUrl}
           alt={panel.name}

@@ -12,6 +12,7 @@ import {
   Download,
   ZoomIn,
   ZoomOut,
+  Crosshair,
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { cn } from "@/lib/utils";
@@ -25,6 +26,8 @@ import {
   segmentWalls,
   WallSegmentationResult,
   isPointOnWall,
+  findBestRectangleForPanel,
+  fitPanelToRectangle,
 } from "@/lib/segmentationService";
 
 type Step =
@@ -60,6 +63,9 @@ export function Visualizer() {
   // Wall mask as CSS clip-path URL for clipping the panel
   const [wallMaskUrl, setWallMaskUrl] = useState<string | null>(null);
 
+  // Depth-enhanced foreground mask URL (combines segmentation + depth for precision)
+  const [enhancedForegroundMaskUrl, setEnhancedForegroundMaskUrl] = useState<string | null>(null);
+
   // Panel transform state
   const [panelTransform, setPanelTransform] = useState<PanelTransform>({
     x: 0,
@@ -77,6 +83,13 @@ export function Visualizer() {
   );
   const [depthAtPanel, setDepthAtPanel] = useState<number>(0.5);
   const [isOnWall, setIsOnWall] = useState<boolean>(false);
+
+  // Just use the segmentation foreground mask directly - depth enhancement causes issues
+  // The enhanced mask is disabled, we'll use wallSegmentation.foregroundMaskUrl directly
+  useEffect(() => {
+    // Don't create enhanced mask - just use the segmentation directly
+    setEnhancedForegroundMaskUrl(null);
+  }, [depthMap, wallSegmentation]);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -166,6 +179,7 @@ export function Visualizer() {
     setWallSegmentation(null);
     setSelectedPanel(null);
     setWallMaskUrl(null);
+    setEnhancedForegroundMaskUrl(null);
     setPanelTransform({ x: 0, y: 0, scale: 1 });
     setPanelRotation({ rotateX: 0, rotateY: 0 });
     setIsOnWall(false);
@@ -254,14 +268,14 @@ export function Visualizer() {
         );
 
         // Calculate horizontal tilt (rotateY) based on left-right depth difference
-        // Inverted: if right side is closer (higher depth), rotate panel to face right
-        const horizontalDepthDiff = leftDepth - rightDepth;
+        // If right side is closer (higher depth), rotate panel to face right
+        const horizontalDepthDiff = rightDepth - leftDepth; // Inverted
         // Multiply by a factor to get reasonable tilt angles (max ~50 degrees)
         const rotateY = horizontalDepthDiff * 120;
 
         // Calculate vertical tilt (rotateX) based on top-bottom depth difference
         // If top is closer (higher depth), tilt panel backward
-        const verticalDepthDiff = bottomDepth - topDepth;
+        const verticalDepthDiff = topDepth - bottomDepth; // Inverted
         const rotateX = verticalDepthDiff * 80;
 
         return {
@@ -280,7 +294,7 @@ export function Visualizer() {
         for (const plane of wallSegmentation.wallPlanes) {
           const dist = Math.sqrt(
             (normalizedX - plane.centerX) ** 2 +
-              (normalizedY - plane.centerY) ** 2
+            (normalizedY - plane.centerY) ** 2
           );
           if (dist < minDist) {
             minDist = dist;
@@ -288,8 +302,8 @@ export function Visualizer() {
           }
         }
 
-        const rotateY = closest.normalX * 50;
-        const rotateX = closest.normalY * 40;
+        const rotateY = -closest.normalX * 50; // Inverted
+        const rotateX = -closest.normalY * 40; // Inverted
 
         return {
           rotateX: Math.max(-45, Math.min(45, rotateX)),
@@ -303,8 +317,8 @@ export function Visualizer() {
       const relativeX = normalizedX - 0.5;
       const relativeY = normalizedY - 0.5;
 
-      const rotateY = -relativeX * 40;
-      const rotateX = relativeY * 30;
+      const rotateY = relativeX * 40; // Inverted
+      const rotateX = -relativeY * 30; // Inverted
 
       return {
         rotateX: Math.max(-45, Math.min(45, rotateX)),
@@ -545,6 +559,87 @@ export function Visualizer() {
     setPanelRotation({ rotateX: 0, rotateY: 0 });
   }, []);
 
+  // Snap panel to best detected rectangle
+  const handleSnapToWall = useCallback(() => {
+    if (!wallSegmentation || !containerRef.current || !selectedPanel || !panelDimensions.loaded) {
+      toast.error("No wall rectangles detected");
+      return;
+    }
+
+    const rectangles = wallSegmentation.detectedRectangles;
+    if (!rectangles || rectangles.length === 0) {
+      toast.error("No rectangular wall areas detected");
+      return;
+    }
+
+    const container = containerRef.current;
+    const rect = container.getBoundingClientRect();
+
+    // Calculate panel aspect ratio
+    const panelAspectRatio = panelDimensions.width / panelDimensions.height;
+
+    // Find the best rectangle for this panel
+    const bestRect = findBestRectangleForPanel(rectangles, panelAspectRatio, 0.01);
+
+    if (!bestRect) {
+      toast.error("No suitable wall area found");
+      return;
+    }
+
+    console.log("[Snap] Best rectangle:", bestRect);
+    console.log("[Snap] Container size:", rect.width, rect.height);
+
+    // Calculate target dimensions in pixels
+    const targetHeight = bestRect.height * rect.height;
+    const targetWidth = Math.min(bestRect.width * rect.width, targetHeight * panelAspectRatio);
+
+    // Calculate position (top-left corner of rectangle, centered horizontally)
+    const rectLeft = bestRect.boundingBox.xmin * rect.width;
+    const rectTop = bestRect.boundingBox.ymin * rect.height;
+    const rectWidth = bestRect.width * rect.width;
+    const offsetX = (rectWidth - targetWidth) / 2;
+
+    const targetX = rectLeft + offsetX;
+    const targetY = rectTop;
+
+    console.log("[Snap] Target position:", targetX, targetY);
+    console.log("[Snap] Target size:", targetWidth, targetHeight);
+
+    // Calculate the scale needed to achieve target height
+    // scaledPanelHeight = basePanelSize.height * scale * depthScale
+    // We want: targetHeight = basePanelSize.height * newScale * depthScale
+    // So: newScale = targetHeight / (basePanelSize.height * depthScale)
+    const baseSize = getBasePanelSize();
+    const depthScaleFactor = 0.6 + depthAtPanel * 0.8;
+    const clampedDepthScale = Math.max(0.6, Math.min(1.4, depthScaleFactor));
+
+    const newScale = targetHeight / (baseSize.height * clampedDepthScale);
+
+    console.log("[Snap] Base size:", baseSize);
+    console.log("[Snap] Depth scale:", clampedDepthScale);
+    console.log("[Snap] New scale:", newScale);
+
+    setPanelTransform({
+      x: targetX,
+      y: targetY,
+      scale: Math.max(0.3, Math.min(5, newScale)),
+    });
+
+    // Update rotation based on wall plane
+    const perspective = calculateWallAwarePerspective(
+      targetX + targetWidth / 2,
+      targetY + targetHeight / 2,
+      targetWidth,
+      targetHeight
+    );
+    setPanelRotation({
+      rotateX: perspective.rotateX,
+      rotateY: perspective.rotateY,
+    });
+
+    toast.success("Panel snapped to wall!");
+  }, [wallSegmentation, selectedPanel, panelDimensions, calculateWallAwarePerspective, depthAtPanel, getBasePanelSize]);
+
   const handleSelectPanel = useCallback(
     (panel: WallPanel) => {
       setSelectedPanel(panel);
@@ -700,10 +795,48 @@ export function Visualizer() {
         scaledPanelHeight
       );
 
-      // Restore all context states
+      // Restore panel transform context
       ctx.restore();
+
+      // Restore wall clipping context if it was applied
       if (wallSegmentation && wallSegmentation.wallMask.length > 0) {
         ctx.restore();
+
+        // Now draw foreground objects on top (non-wall pixels from original image)
+        // Create a temporary canvas to apply the foreground mask
+        const fgCanvas = document.createElement("canvas");
+        fgCanvas.width = canvas.width;
+        fgCanvas.height = canvas.height;
+        const fgCtx = fgCanvas.getContext("2d")!;
+
+        // Draw the original image
+        fgCtx.drawImage(bgImg, 0, 0, canvas.width, canvas.height);
+
+        // Get the foreground pixels (non-wall) from original and composite them
+        const fgImageData = fgCtx.getImageData(0, 0, canvas.width, canvas.height);
+        const mainImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+        const maskScaleX = canvas.width / wallSegmentation.width;
+        const maskScaleY = canvas.height / wallSegmentation.height;
+
+        for (let y = 0; y < canvas.height; y++) {
+          for (let x = 0; x < canvas.width; x++) {
+            const mx = Math.floor(x / maskScaleX);
+            const my = Math.floor(y / maskScaleY);
+            const maskIdx = my * wallSegmentation.width + mx;
+
+            // If this pixel is NOT a wall (foreground object), use original image
+            if (wallSegmentation.wallMask[maskIdx] === 0) {
+              const pixelIdx = (y * canvas.width + x) * 4;
+              mainImageData.data[pixelIdx] = fgImageData.data[pixelIdx];
+              mainImageData.data[pixelIdx + 1] = fgImageData.data[pixelIdx + 1];
+              mainImageData.data[pixelIdx + 2] = fgImageData.data[pixelIdx + 2];
+              mainImageData.data[pixelIdx + 3] = fgImageData.data[pixelIdx + 3];
+            }
+          }
+        }
+
+        ctx.putImageData(mainImageData, 0, 0);
       }
 
       // Download
@@ -883,10 +1016,37 @@ export function Visualizer() {
                       <Button
                         variant="minimal"
                         size="sm"
+                        onClick={handleSnapToWall}
+                        disabled={!wallSegmentation?.detectedRectangles?.length}
+                        title="Snap panel to detected wall area"
+                      >
+                        <Crosshair className="w-4 h-4 mr-1" />
+                        Snap
+                      </Button>
+                      <Button
+                        variant="minimal"
+                        size="sm"
                         onClick={handleResetTransform}
                       >
                         <RotateCcw className="w-4 h-4 mr-1" />
                         Reset
+                      </Button>
+                      <div className="w-px h-6 bg-border mx-2" />
+                      <Button
+                        variant="hero"
+                        size="sm"
+                        onClick={handleDownload}
+                        disabled={isProcessing}
+                        title="Download visualization"
+                      >
+                        {isProcessing ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <>
+                            <Download className="w-4 h-4 mr-1" />
+                            <span className="hidden sm:inline">Download</span>
+                          </>
+                        )}
                       </Button>
                     </>
                   )}
@@ -902,7 +1062,7 @@ export function Visualizer() {
                 <div className="lg:col-span-3">
                   <div
                     ref={containerRef}
-                    className="relative rounded-2xl overflow-hidden bg-muted shadow-medium select-none"
+                    className="relative rounded-2xl overflow-hidden bg-muted shadow-medium select-none w-fit mx-auto"
                     style={{ perspective: "1200px" }}
                     onMouseMove={handleMouseMove}
                     onMouseUp={handleMouseUp}
@@ -914,7 +1074,7 @@ export function Visualizer() {
                     <img
                       src={uploadedImage}
                       alt="Room"
-                      className="w-full h-auto"
+                      className="max-h-[75vh] w-auto max-w-full h-auto block"
                       draggable={false}
                       ref={(el) => {
                         imageRef.current = el;
@@ -937,53 +1097,76 @@ export function Visualizer() {
                       />
                     )}
 
-                    {/* Draggable panel overlay - clipped to wall area */}
+                    {/* Draggable panel overlay */}
                     {selectedPanel && panelDimensions.loaded && (
                       <div
-                        className={cn(
-                          "absolute origin-center transition-transform",
-                          isDragging ? "cursor-grabbing" : "cursor-grab"
-                        )}
-                        style={{
-                          left: panelTransform.x,
-                          top: panelTransform.y,
-                          width: scaledPanelWidth,
-                          height: scaledPanelHeight,
-                          transform: `rotateX(${panelRotation.rotateX}deg) rotateY(${panelRotation.rotateY}deg)`,
-                          transformStyle: "preserve-3d",
-                          transitionDuration: isDragging ? "0ms" : "300ms",
-                          filter: `drop-shadow(${
-                            -panelRotation.rotateY * 0.5
-                          }px ${
-                            panelRotation.rotateX * 0.5 + 8
-                          }px 12px rgba(0,0,0,0.4))`,
-                        }}
-                        onMouseDown={handleMouseDown}
-                        onTouchStart={handleTouchStart}
+                        className="absolute inset-0 pointer-events-none overflow-hidden"
                       >
-                        <img
-                          src={selectedPanel.textureUrl}
-                          alt={selectedPanel.name}
-                          className="w-full h-full object-contain pointer-events-none"
-                          draggable={false}
+                        <div
+                          className={cn(
+                            "absolute origin-center transition-transform pointer-events-auto",
+                            isDragging ? "cursor-grabbing" : "cursor-grab"
+                          )}
                           style={{
-                            filter: `brightness(${1 - depthAtPanel * 0.15})`,
+                            left: panelTransform.x,
+                            top: panelTransform.y,
+                            width: scaledPanelWidth,
+                            height: scaledPanelHeight,
+                            transform: `rotateX(${panelRotation.rotateX}deg) rotateY(${panelRotation.rotateY}deg)`,
+                            transformStyle: "preserve-3d",
+                            transitionDuration: isDragging ? "0ms" : "300ms",
+                            filter: `drop-shadow(${-panelRotation.rotateY * 0.5
+                              }px ${panelRotation.rotateX * 0.5 + 8
+                              }px 12px rgba(0,0,0,0.4))`,
                           }}
-                        />
+                          onMouseDown={handleMouseDown}
+                          onTouchStart={handleTouchStart}
+                        >
+                          <img
+                            src={selectedPanel.textureUrl}
+                            alt={selectedPanel.name}
+                            className="w-full h-full object-contain pointer-events-none"
+                            draggable={false}
+                            style={{
+                              filter: `brightness(${1 - depthAtPanel * 0.15})`,
+                            }}
+                          />
 
-                        {/* Hover indicator */}
-                        {!isDragging && (
-                          <>
-                            <div className="absolute inset-0 border-2 border-transparent group-hover:border-white/40 rounded transition-colors duration-200 pointer-events-none" />
-                            <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none">
-                              <div className="bg-black/50 text-white px-3 py-1 rounded-full text-sm flex items-center gap-1">
-                                <Move className="w-4 h-4" />
-                                Drag to move
+                          {/* Hover indicator */}
+                          {!isDragging && (
+                            <>
+                              <div className="absolute inset-0 border-2 border-transparent group-hover:border-white/40 rounded transition-colors duration-200 pointer-events-none" />
+                              <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none">
+                                <div className="bg-black/50 text-white px-3 py-1 rounded-full text-sm flex items-center gap-1">
+                                  <Move className="w-4 h-4" />
+                                  Drag to move
+                                </div>
                               </div>
-                            </div>
-                          </>
-                        )}
+                            </>
+                          )}
+                        </div>
                       </div>
+                    )}
+
+                    {/* Foreground overlay - shows non-wall objects ON TOP of the panel */}
+                    {/* Uses depth-enhanced mask for better precision, falls back to segmentation-only */}
+                    {selectedPanel && (enhancedForegroundMaskUrl || wallSegmentation?.foregroundMaskUrl) && (
+                      <img
+                        src={uploadedImage}
+                        alt="Foreground"
+                        className="absolute top-0 left-0 max-h-[75vh] w-auto max-w-full h-auto pointer-events-none"
+                        draggable={false}
+                        style={{
+                          WebkitMaskImage: `url(${enhancedForegroundMaskUrl || wallSegmentation?.foregroundMaskUrl})`,
+                          maskImage: `url(${enhancedForegroundMaskUrl || wallSegmentation?.foregroundMaskUrl})`,
+                          WebkitMaskSize: '100% 100%',
+                          maskSize: '100% 100%',
+                          WebkitMaskRepeat: 'no-repeat',
+                          maskRepeat: 'no-repeat',
+                          WebkitMaskMode: 'luminance',
+                          maskMode: 'luminance',
+                        }}
+                      />
                     )}
 
                     {/* Depth mask canvas for composite generation */}
@@ -1017,38 +1200,22 @@ export function Visualizer() {
                       <span>Size: {(clampedDepthScale * 100).toFixed(0)}%</span>
                     </div>
                   )}
-
-                  {/* Download button */}
-                  {selectedPanel && (
-                    <div className="mt-4 flex justify-center">
-                      <Button
-                        variant="hero"
-                        size="lg"
-                        onClick={handleDownload}
-                        disabled={isProcessing}
-                      >
-                        {isProcessing ? (
-                          <>
-                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                            Processing...
-                          </>
-                        ) : (
-                          <>
-                            <Download className="w-4 h-4 mr-2" />
-                            Download Visualization
-                          </>
-                        )}
-                      </Button>
-                    </div>
-                  )}
                 </div>
 
-                {/* Panel selector sidebar */}
-                <div className="lg:col-span-1">
+
+
+                {/* Mobile Panel Selector (below image) */}
+                <div className="block lg:hidden mt-6">
+                  <PanelSelector
+                    selectedPanel={selectedPanel}
+                    onSelect={handleSelectPanel}
+                    compact={false}
+                  />
+                </div>
+
+                {/* Panel selector sidebar (Desktop) */}
+                <div className="hidden lg:block lg:col-span-1">
                   <div className="sticky top-4">
-                    <h3 className="text-lg font-semibold text-foreground mb-4">
-                      Choose Panel
-                    </h3>
                     <PanelSelector
                       selectedPanel={selectedPanel}
                       onSelect={handleSelectPanel}
@@ -1077,6 +1244,6 @@ export function Visualizer() {
           )}
         </div>
       </div>
-    </section>
+    </section >
   );
 }
