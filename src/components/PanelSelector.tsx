@@ -53,9 +53,7 @@ export function PanelSelector({
                 {panel.name}
               </p>
               {panel.price && (
-                <p className="text-white/80 text-[10px]">
-                  {panel.price}
-                </p>
+                <p className="text-white/80 text-[10px]">{panel.price}</p>
               )}
             </div>
             {selectedPanel?.id === panel.id && (

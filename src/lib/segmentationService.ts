@@ -36,40 +36,52 @@ function detectRectanglesInMask(
   minAreaRatio: number = 0.02 // Minimum 2% of image area
 ): DetectedRectangle[] {
   const rectangles: DetectedRectangle[] = [];
-  
+
   // Find connected components and their bounding boxes
   const visited = new Uint8Array(width * height);
-  const components: { pixels: number[]; minX: number; minY: number; maxX: number; maxY: number }[] = [];
-  
+  const components: {
+    pixels: number[];
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+  }[] = [];
+
   // Flood fill to find connected components
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const idx = y * width + x;
       if (wallMask[idx] > 0 && !visited[idx]) {
         // BFS flood fill
-        const component = { pixels: [] as number[], minX: x, minY: y, maxX: x, maxY: y };
+        const component = {
+          pixels: [] as number[],
+          minX: x,
+          minY: y,
+          maxX: x,
+          maxY: y,
+        };
         const queue: number[] = [idx];
         visited[idx] = 1;
-        
+
         while (queue.length > 0) {
           const currentIdx = queue.shift()!;
           component.pixels.push(currentIdx);
-          
+
           const cx = currentIdx % width;
           const cy = Math.floor(currentIdx / width);
           component.minX = Math.min(component.minX, cx);
           component.minY = Math.min(component.minY, cy);
           component.maxX = Math.max(component.maxX, cx);
           component.maxY = Math.max(component.maxY, cy);
-          
+
           // Check 4-connected neighbors
           const neighbors = [
-            cy > 0 ? currentIdx - width : -1,           // up
-            cy < height - 1 ? currentIdx + width : -1,  // down
-            cx > 0 ? currentIdx - 1 : -1,               // left
-            cx < width - 1 ? currentIdx + 1 : -1        // right
+            cy > 0 ? currentIdx - width : -1, // up
+            cy < height - 1 ? currentIdx + width : -1, // down
+            cx > 0 ? currentIdx - 1 : -1, // left
+            cx < width - 1 ? currentIdx + 1 : -1, // right
           ];
-          
+
           for (const nIdx of neighbors) {
             if (nIdx >= 0 && wallMask[nIdx] > 0 && !visited[nIdx]) {
               visited[nIdx] = 1;
@@ -77,26 +89,26 @@ function detectRectanglesInMask(
             }
           }
         }
-        
+
         components.push(component);
       }
     }
   }
-  
+
   // Analyze each component for rectangular-ness
   for (const component of components) {
     const boxWidth = component.maxX - component.minX + 1;
     const boxHeight = component.maxY - component.minY + 1;
     const boxArea = boxWidth * boxHeight;
     const pixelCount = component.pixels.length;
-    
+
     // Calculate fill ratio (how much of bounding box is filled)
     const fillRatio = pixelCount / boxArea;
-    
+
     // Skip if too small
     const areaRatio = pixelCount / (width * height);
     if (areaRatio < minAreaRatio) continue;
-    
+
     // Consider it rectangular if fill ratio is high enough (>70%)
     if (fillRatio > 0.7) {
       const normMinX = component.minX / width;
@@ -105,7 +117,7 @@ function detectRectanglesInMask(
       const normMaxY = component.maxY / height;
       const normWidth = normMaxX - normMinX;
       const normHeight = normMaxY - normMinY;
-      
+
       rectangles.push({
         corners: [
           { x: normMinX, y: normMinY }, // top-left
@@ -130,11 +142,13 @@ function detectRectanglesInMask(
       });
     }
   }
-  
+
   // Sort by area (largest first)
   rectangles.sort((a, b) => b.area - a.area);
-  
-  console.log(`[Segmentation] Detected ${rectangles.length} rectangular regions`);
+
+  console.log(
+    `[Segmentation] Detected ${rectangles.length} rectangular regions`
+  );
   return rectangles;
 }
 
@@ -224,7 +238,7 @@ export interface DetectedRectangle {
 
 export interface WallPlane {
   label: string;
-  centerX: number; 
+  centerX: number;
   centerY: number;
   normalX: number;
   normalY: number;
@@ -272,25 +286,21 @@ async function initSegmentationPipeline(
 
       // Use RMBG-1.4 for high-quality foreground/background separation
       // The model returns a foreground mask - we'll invert it to get the wall (background) mask
-      const pipe = await pipeline(
-        "image-segmentation",
-        SEGMENTATION_MODEL,
-        {
-          progress_callback: (data: {
-            progress?: number;
-            status?: string;
-            file?: string;
-          }) => {
-            console.log("[Segmentation] Progress:", data);
-            if (data.progress !== undefined) {
-              onProgress?.(
-                data.progress,
-                data.status || `Loading ${data.file || "model"}...`
-              );
-            }
-          },
-        }
-      );
+      const pipe = await pipeline("image-segmentation", SEGMENTATION_MODEL, {
+        progress_callback: (data: {
+          progress?: number;
+          status?: string;
+          file?: string;
+        }) => {
+          console.log("[Segmentation] Progress:", data);
+          if (data.progress !== undefined) {
+            onProgress?.(
+              data.progress,
+              data.status || `Loading ${data.file || "model"}...`
+            );
+          }
+        },
+      });
 
       console.log("[Segmentation] Pipeline created successfully!");
       segmentationPipeline = pipe;
@@ -322,7 +332,11 @@ export async function segmentWalls(
     onProgress?.(10, "Preparing image...");
     const { dataUrl: resizedImageUrl, scale } =
       await resizeImageForSegmentation(imageUrl);
-    console.log("[Segmentation] Image resized successfully (scale:", scale, ")");
+    console.log(
+      "[Segmentation] Image resized successfully (scale:",
+      scale,
+      ")"
+    );
 
     // Step 2: Initialize the pipeline
     console.log("[Segmentation] Step 2: Getting pipeline...");
@@ -333,15 +347,15 @@ export async function segmentWalls(
 
     // Step 3: Run RMBG segmentation - returns foreground mask
     console.log("[Segmentation] Step 3: Running RMBG background removal...");
-    
+
     // RMBG-1.4 uses the standard image-segmentation pipeline
     // It returns an array with a single segment containing the foreground mask
     const results = await pipe(resizedImageUrl);
     console.log("[Segmentation] RMBG result received");
-    
+
     // Ensure results is an array
     const segments = Array.isArray(results) ? results : [results];
-    
+
     if (segments.length === 0 || !segments[0]?.mask) {
       console.log("[Segmentation] No mask in results");
       onProgress?.(100, "Background removal failed");
@@ -358,7 +372,7 @@ export async function segmentWalls(
         detectedRectangles: [],
       };
     }
-    
+
     // Get the foreground mask from the first (and typically only) segment
     const foregroundMask = segments[0].mask as RawImage;
     const width = foregroundMask.width;
@@ -375,9 +389,14 @@ export async function segmentWalls(
     // We want: white = wall, black = non-wall
     const wallMask = new Uint8Array(width * height);
     const wallPlanes: WallPlane[] = [];
-    
-    let minX = width, minY = height, maxX = 0, maxY = 0;
-    let sumX = 0, sumY = 0, wallPixelCount = 0;
+
+    let minX = width,
+      minY = height,
+      maxX = 0,
+      maxY = 0;
+    let sumX = 0,
+      sumY = 0,
+      wallPixelCount = 0;
 
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
@@ -386,11 +405,11 @@ export async function segmentWalls(
         // We read the first channel (or alpha if available)
         const dataIdx = pixelIdx * channels;
         const foregroundValue = maskData[dataIdx];
-        
+
         // Invert: low foreground value = wall (background)
         // Using threshold of 128 for binary decision
         const isWall = foregroundValue < 128;
-        
+
         if (isWall) {
           wallMask[pixelIdx] = 255;
           minX = Math.min(minX, x);
@@ -404,7 +423,9 @@ export async function segmentWalls(
       }
     }
 
-    console.log(`[Segmentation] Wall pixels found: ${wallPixelCount} / ${width * height}`);
+    console.log(
+      `[Segmentation] Wall pixels found: ${wallPixelCount} / ${width * height}`
+    );
 
     // Create a single wall plane for the detected background area
     if (wallPixelCount > 0) {
@@ -425,15 +446,20 @@ export async function segmentWalls(
         },
       });
       console.log(
-        `[Segmentation] Wall plane detected: center=(${centerX.toFixed(2)}, ${centerY.toFixed(2)}), area=${(
-          (wallPixelCount / (width * height)) * 100
+        `[Segmentation] Wall plane detected: center=(${centerX.toFixed(
+          2
+        )}, ${centerY.toFixed(2)}), area=${(
+          (wallPixelCount / (width * height)) *
+          100
         ).toFixed(1)}%`
       );
     }
 
     // Step 5: Calculate overall bounding box
     const wallArea = wallPixelCount / (width * height);
-    console.log(`[Segmentation] Total wall area: ${(wallArea * 100).toFixed(1)}%`);
+    console.log(
+      `[Segmentation] Total wall area: ${(wallArea * 100).toFixed(1)}%`
+    );
 
     // Step 6: Create visualization of the wall mask (red tint for debugging)
     const canvas = document.createElement("canvas");
@@ -485,7 +511,12 @@ export async function segmentWalls(
     const detectedRectangles = detectRectanglesInMask(wallMask, width, height);
 
     onProgress?.(100, "Wall detection complete!");
-    console.log("[Segmentation] Complete! Wall planes:", wallPlanes.length, "Rectangles:", detectedRectangles.length);
+    console.log(
+      "[Segmentation] Complete! Wall planes:",
+      wallPlanes.length,
+      "Rectangles:",
+      detectedRectangles.length
+    );
 
     return {
       wallMask,
@@ -590,30 +621,30 @@ export function findBestRectangleForPanel(
   minArea: number = 0.05 // Minimum 5% of image
 ): DetectedRectangle | null {
   if (rectangles.length === 0) return null;
-  
+
   // Filter by minimum area
-  const candidates = rectangles.filter(r => r.area >= minArea);
+  const candidates = rectangles.filter((r) => r.area >= minArea);
   if (candidates.length === 0) {
     // Fallback to largest rectangle if none meet minimum
     return rectangles[0];
   }
-  
+
   // Score rectangles by aspect ratio match (lower is better)
-  const scored = candidates.map(r => ({
+  const scored = candidates.map((r) => ({
     rect: r,
-    score: Math.abs(r.aspectRatio - panelAspectRatio) / panelAspectRatio
+    score: Math.abs(r.aspectRatio - panelAspectRatio) / panelAspectRatio,
   }));
-  
+
   // Sort by score (best match first)
   scored.sort((a, b) => a.score - b.score);
-  
+
   return scored[0].rect;
 }
 
 /**
  * Get panel position and size to fit exactly within a detected rectangle.
  * Returns position (top-left) and dimensions in normalized coordinates.
- * 
+ *
  * @param stretchToFill - If true, stretches panel to fill full height of rectangle (ignores aspect ratio)
  */
 export function fitPanelToRectangle(
@@ -627,32 +658,34 @@ export function fitPanelToRectangle(
   // Apply padding only horizontally, no vertical padding for full stretch
   const horizontalPadding = padding;
   const verticalPadding = stretchToFill ? 0 : padding;
-  
+
   const paddedWidth = rectangle.width * (1 - horizontalPadding * 2);
   const paddedHeight = rectangle.height * (1 - verticalPadding * 2);
-  const paddedX = rectangle.boundingBox.xmin + rectangle.width * horizontalPadding;
-  const paddedY = rectangle.boundingBox.ymin + rectangle.height * verticalPadding;
-  
+  const paddedX =
+    rectangle.boundingBox.xmin + rectangle.width * horizontalPadding;
+  const paddedY =
+    rectangle.boundingBox.ymin + rectangle.height * verticalPadding;
+
   let panelWidth: number, panelHeight: number;
   let offsetX: number, offsetY: number;
-  
+
   if (stretchToFill) {
     // Stretch to fill full height, calculate width based on aspect ratio
     panelHeight = paddedHeight;
     panelWidth = paddedHeight * panelAspectRatio;
-    
+
     // If panel would be wider than rectangle, constrain to rectangle width
     if (panelWidth > paddedWidth) {
       panelWidth = paddedWidth;
     }
-    
+
     // Center horizontally, align to top/bottom edges
     offsetX = (paddedWidth - panelWidth) / 2;
     offsetY = 0;
   } else {
     // Original behavior: fit within rectangle maintaining aspect ratio
     const rectAspect = paddedWidth / paddedHeight;
-    
+
     if (panelAspectRatio > rectAspect) {
       // Panel is wider than rectangle - fit to width
       panelWidth = paddedWidth;
@@ -662,12 +695,12 @@ export function fitPanelToRectangle(
       panelHeight = paddedHeight;
       panelWidth = paddedHeight * panelAspectRatio;
     }
-    
+
     // Center panel within rectangle
     offsetX = (paddedWidth - panelWidth) / 2;
     offsetY = (paddedHeight - panelHeight) / 2;
   }
-  
+
   return {
     x: (paddedX + offsetX) * containerWidth,
     y: (paddedY + offsetY) * containerHeight,

@@ -64,7 +64,9 @@ export function Visualizer() {
   const [wallMaskUrl, setWallMaskUrl] = useState<string | null>(null);
 
   // Depth-enhanced foreground mask URL (combines segmentation + depth for precision)
-  const [enhancedForegroundMaskUrl, setEnhancedForegroundMaskUrl] = useState<string | null>(null);
+  const [enhancedForegroundMaskUrl, setEnhancedForegroundMaskUrl] = useState<
+    string | null
+  >(null);
 
   // Panel transform state
   const [panelTransform, setPanelTransform] = useState<PanelTransform>({
@@ -294,7 +296,7 @@ export function Visualizer() {
         for (const plane of wallSegmentation.wallPlanes) {
           const dist = Math.sqrt(
             (normalizedX - plane.centerX) ** 2 +
-            (normalizedY - plane.centerY) ** 2
+              (normalizedY - plane.centerY) ** 2
           );
           if (dist < minDist) {
             minDist = dist;
@@ -561,7 +563,12 @@ export function Visualizer() {
 
   // Snap panel to best detected rectangle
   const handleSnapToWall = useCallback(() => {
-    if (!wallSegmentation || !containerRef.current || !selectedPanel || !panelDimensions.loaded) {
+    if (
+      !wallSegmentation ||
+      !containerRef.current ||
+      !selectedPanel ||
+      !panelDimensions.loaded
+    ) {
       toast.error("No wall rectangles detected");
       return;
     }
@@ -579,7 +586,11 @@ export function Visualizer() {
     const panelAspectRatio = panelDimensions.width / panelDimensions.height;
 
     // Find the best rectangle for this panel
-    const bestRect = findBestRectangleForPanel(rectangles, panelAspectRatio, 0.01);
+    const bestRect = findBestRectangleForPanel(
+      rectangles,
+      panelAspectRatio,
+      0.01
+    );
 
     if (!bestRect) {
       toast.error("No suitable wall area found");
@@ -591,7 +602,10 @@ export function Visualizer() {
 
     // Calculate target dimensions in pixels
     const targetHeight = bestRect.height * rect.height;
-    const targetWidth = Math.min(bestRect.width * rect.width, targetHeight * panelAspectRatio);
+    const targetWidth = Math.min(
+      bestRect.width * rect.width,
+      targetHeight * panelAspectRatio
+    );
 
     // Calculate position (top-left corner of rectangle, centered horizontally)
     const rectLeft = bestRect.boundingBox.xmin * rect.width;
@@ -638,7 +652,14 @@ export function Visualizer() {
     });
 
     toast.success("Panel snapped to wall!");
-  }, [wallSegmentation, selectedPanel, panelDimensions, calculateWallAwarePerspective, depthAtPanel, getBasePanelSize]);
+  }, [
+    wallSegmentation,
+    selectedPanel,
+    panelDimensions,
+    calculateWallAwarePerspective,
+    depthAtPanel,
+    getBasePanelSize,
+  ]);
 
   const handleSelectPanel = useCallback(
     (panel: WallPanel) => {
@@ -813,8 +834,18 @@ export function Visualizer() {
         fgCtx.drawImage(bgImg, 0, 0, canvas.width, canvas.height);
 
         // Get the foreground pixels (non-wall) from original and composite them
-        const fgImageData = fgCtx.getImageData(0, 0, canvas.width, canvas.height);
-        const mainImageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const fgImageData = fgCtx.getImageData(
+          0,
+          0,
+          canvas.width,
+          canvas.height
+        );
+        const mainImageData = ctx.getImageData(
+          0,
+          0,
+          canvas.width,
+          canvas.height
+        );
 
         const maskScaleX = canvas.width / wallSegmentation.width;
         const maskScaleY = canvas.height / wallSegmentation.height;
@@ -1099,9 +1130,7 @@ export function Visualizer() {
 
                     {/* Draggable panel overlay */}
                     {selectedPanel && panelDimensions.loaded && (
-                      <div
-                        className="absolute inset-0 pointer-events-none overflow-hidden"
-                      >
+                      <div className="absolute inset-0 pointer-events-none overflow-hidden">
                         <div
                           className={cn(
                             "absolute origin-center transition-transform pointer-events-auto",
@@ -1115,9 +1144,11 @@ export function Visualizer() {
                             transform: `rotateX(${panelRotation.rotateX}deg) rotateY(${panelRotation.rotateY}deg)`,
                             transformStyle: "preserve-3d",
                             transitionDuration: isDragging ? "0ms" : "300ms",
-                            filter: `drop-shadow(${-panelRotation.rotateY * 0.5
-                              }px ${panelRotation.rotateX * 0.5 + 8
-                              }px 12px rgba(0,0,0,0.4))`,
+                            filter: `drop-shadow(${
+                              -panelRotation.rotateY * 0.5
+                            }px ${
+                              panelRotation.rotateX * 0.5 + 8
+                            }px 12px rgba(0,0,0,0.4))`,
                           }}
                           onMouseDown={handleMouseDown}
                           onTouchStart={handleTouchStart}
@@ -1150,24 +1181,32 @@ export function Visualizer() {
 
                     {/* Foreground overlay - shows non-wall objects ON TOP of the panel */}
                     {/* Uses depth-enhanced mask for better precision, falls back to segmentation-only */}
-                    {selectedPanel && (enhancedForegroundMaskUrl || wallSegmentation?.foregroundMaskUrl) && (
-                      <img
-                        src={uploadedImage}
-                        alt="Foreground"
-                        className="absolute top-0 left-0 max-h-[75vh] w-auto max-w-full h-auto pointer-events-none"
-                        draggable={false}
-                        style={{
-                          WebkitMaskImage: `url(${enhancedForegroundMaskUrl || wallSegmentation?.foregroundMaskUrl})`,
-                          maskImage: `url(${enhancedForegroundMaskUrl || wallSegmentation?.foregroundMaskUrl})`,
-                          WebkitMaskSize: '100% 100%',
-                          maskSize: '100% 100%',
-                          WebkitMaskRepeat: 'no-repeat',
-                          maskRepeat: 'no-repeat',
-                          WebkitMaskMode: 'luminance',
-                          maskMode: 'luminance',
-                        }}
-                      />
-                    )}
+                    {selectedPanel &&
+                      (enhancedForegroundMaskUrl ||
+                        wallSegmentation?.foregroundMaskUrl) && (
+                        <img
+                          src={uploadedImage}
+                          alt="Foreground"
+                          className="absolute top-0 left-0 max-h-[75vh] w-auto max-w-full h-auto pointer-events-none"
+                          draggable={false}
+                          style={{
+                            WebkitMaskImage: `url(${
+                              enhancedForegroundMaskUrl ||
+                              wallSegmentation?.foregroundMaskUrl
+                            })`,
+                            maskImage: `url(${
+                              enhancedForegroundMaskUrl ||
+                              wallSegmentation?.foregroundMaskUrl
+                            })`,
+                            WebkitMaskSize: "100% 100%",
+                            maskSize: "100% 100%",
+                            WebkitMaskRepeat: "no-repeat",
+                            maskRepeat: "no-repeat",
+                            WebkitMaskMode: "luminance",
+                            maskMode: "luminance",
+                          }}
+                        />
+                      )}
 
                     {/* Depth mask canvas for composite generation */}
                     <canvas
@@ -1201,8 +1240,6 @@ export function Visualizer() {
                     </div>
                   )}
                 </div>
-
-
 
                 {/* Mobile Panel Selector (below image) */}
                 <div className="block lg:hidden mt-6">
@@ -1244,6 +1281,6 @@ export function Visualizer() {
           )}
         </div>
       </div>
-    </section >
+    </section>
   );
 }

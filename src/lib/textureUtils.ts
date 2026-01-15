@@ -296,11 +296,11 @@ export async function applyTextureWithDepthMask(
         // Use a stable reference point (center of image) to prevent wobbling
         const centerX = canvas.width * 0.5;
         const centerY = canvas.height * 0.5;
-        
+
         // Calculate offset from center in texture space
         const offsetX = x - centerX;
         const offsetY = y - centerY;
-        
+
         // Apply perspective tilt with reduced strength for stability
         const tiltStrength = 0.3; // Reduced from implicit 0.5
         const tiltOffsetX = avgGradX * offsetX * tiltStrength;
