@@ -7,9 +7,12 @@ import {
 
 // Check if we're in a secure context (Cache API requires secure context)
 // localhost is always secure, but local IP addresses over HTTP are not
-const isInSecureContext = typeof window !== 'undefined' && (window.isSecureContext ?? false);
+const isInSecureContext =
+  typeof window !== "undefined" && (window.isSecureContext ?? false);
 env.useBrowserCache = isInSecureContext;
-console.log(`[Depth Init] Secure context: ${isInSecureContext}, useBrowserCache: ${env.useBrowserCache}`);
+console.log(
+  `[Depth Init] Secure context: ${isInSecureContext}, useBrowserCache: ${env.useBrowserCache}`,
+);
 
 // Singleton to hold the depth estimation pipeline
 let depthPipeline: DepthEstimationPipeline | null = null;
@@ -23,9 +26,11 @@ let hasMemoryError = false;
  * Detect if we're running on a mobile device
  */
 function isMobileDevice(): boolean {
-  if (typeof navigator === 'undefined') return false;
-  const ua = navigator.userAgent || '';
-  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+    ua,
+  );
 }
 
 /**
@@ -33,8 +38,8 @@ function isMobileDevice(): boolean {
  * Android Chrome has known WASM memory limitations
  */
 function isAndroid(): boolean {
-  if (typeof navigator === 'undefined') return false;
-  return /Android/i.test(navigator.userAgent || '');
+  if (typeof navigator === "undefined") return false;
+  return /Android/i.test(navigator.userAgent || "");
 }
 
 /**
@@ -42,7 +47,7 @@ function isAndroid(): boolean {
  */
 function isSharedArrayBufferAvailable(): boolean {
   try {
-    if (typeof SharedArrayBuffer === 'undefined') {
+    if (typeof SharedArrayBuffer === "undefined") {
       return false;
     }
     new SharedArrayBuffer(1);
@@ -59,27 +64,29 @@ function isSharedArrayBufferAvailable(): boolean {
 let onnxConfigured = false;
 function configureOnnxRuntime(): void {
   if (onnxConfigured) return;
-  
+
   const mobile = isMobileDevice();
   const hasSharedArrayBuffer = isSharedArrayBufferAvailable();
   const needsSingleThreaded = mobile || !hasSharedArrayBuffer;
-  
+
   console.log("[Depth] Environment detection:");
   console.log("[Depth] - Mobile:", mobile);
   console.log("[Depth] - SharedArrayBuffer available:", hasSharedArrayBuffer);
   console.log("[Depth] - Needs single-threaded:", needsSingleThreaded);
-  
+
   if (needsSingleThreaded) {
-    const reason = !hasSharedArrayBuffer 
-      ? "SharedArrayBuffer unavailable" 
+    const reason = !hasSharedArrayBuffer
+      ? "SharedArrayBuffer unavailable"
       : "mobile device";
-    console.log(`[Depth] Configuring ONNX for single-threaded mode. Reason: ${reason}`);
-    
+    console.log(
+      `[Depth] Configuring ONNX for single-threaded mode. Reason: ${reason}`,
+    );
+
     const onnxEnv = env.backends?.onnx;
-    
+
     if (onnxEnv && (onnxEnv as any).wasm) {
       (onnxEnv as any).wasm.numThreads = 1;
-      
+
       // Use non-JSEP WASM files that work without SharedArrayBuffer
       const onnxVersion = "1.21.0";
       (onnxEnv as any).wasm.wasmPaths = {
@@ -91,8 +98,9 @@ function configureOnnxRuntime(): void {
       // Setup fallback structure
       if (!env.backends) (env as any).backends = {};
       if (!env.backends.onnx) (env.backends as any).onnx = {};
-      if (!(env.backends.onnx as any).wasm) (env.backends.onnx as any).wasm = {};
-      
+      if (!(env.backends.onnx as any).wasm)
+        (env.backends.onnx as any).wasm = {};
+
       const onnxVersion = "1.21.0";
       (env.backends.onnx as any).wasm.numThreads = 1;
       (env.backends.onnx as any).wasm.wasmPaths = {
@@ -102,9 +110,11 @@ function configureOnnxRuntime(): void {
       console.log("[Depth] Created ONNX config with non-JSEP WASM paths");
     }
   } else {
-    console.log("[Depth] Using default ONNX config (secure context with SharedArrayBuffer)");
+    console.log(
+      "[Depth] Using default ONNX config (secure context with SharedArrayBuffer)",
+    );
   }
-  
+
   onnxConfigured = true;
 }
 
@@ -121,9 +131,9 @@ export interface DepthMapResult {
  */
 function createFallbackDepthMap(width: number, height: number): DepthMapResult {
   console.log("[Depth] Creating fallback depth map");
-  
+
   const depthData = new Float32Array(width * height);
-  
+
   // Create a simple vertical gradient (top = far, bottom = near)
   // This mimics typical room photos where the floor is closer
   for (let y = 0; y < height; y++) {
@@ -133,14 +143,14 @@ function createFallbackDepthMap(width: number, height: number): DepthMapResult {
       depthData[idx] = 0.3 + (y / height) * 0.5;
     }
   }
-  
+
   // Create a visualization canvas
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext("2d")!;
   const imageData = ctx.createImageData(width, height);
-  
+
   for (let i = 0; i < depthData.length; i++) {
     const val = Math.round(depthData[i] * 255);
     imageData.data[i * 4] = val;
@@ -149,7 +159,7 @@ function createFallbackDepthMap(width: number, height: number): DepthMapResult {
     imageData.data[i * 4 + 3] = 255;
   }
   ctx.putImageData(imageData, 0, 0);
-  
+
   return {
     depthData,
     width,
@@ -163,7 +173,7 @@ function createFallbackDepthMap(width: number, height: number): DepthMapResult {
  * Uses the Xenova/depth-anything-small-hf model which runs in-browser via ONNX.
  */
 export async function initDepthPipeline(
-  onProgress?: (progress: number, status: string) => void
+  onProgress?: (progress: number, status: string) => void,
 ): Promise<DepthEstimationPipeline> {
   // Return existing pipeline if already loaded
   if (depthPipeline) {
@@ -181,7 +191,7 @@ export async function initDepthPipeline(
     try {
       // Configure ONNX runtime for the current environment
       configureOnnxRuntime();
-      
+
       onProgress?.(0, "Loading depth estimation model...");
 
       // Create the depth estimation pipeline with the small model for faster loading
@@ -196,11 +206,11 @@ export async function initDepthPipeline(
             if (progressData.progress !== undefined) {
               onProgress?.(
                 progressData.progress,
-                progressData.status || "Loading..."
+                progressData.status || "Loading...",
               );
             }
           },
-        }
+        },
       );
 
       depthPipeline = pipe as DepthEstimationPipeline;
@@ -224,15 +234,17 @@ export async function initDepthPipeline(
  */
 export async function estimateDepth(
   imageUrl: string,
-  onProgress?: (progress: number, status: string) => void
+  onProgress?: (progress: number, status: string) => void,
 ): Promise<DepthMapResult> {
   console.log("[Depth] estimateDepth called, hasMemoryError:", hasMemoryError);
-  
+
   // If we've previously had a memory error, use fallback
   if (hasMemoryError) {
-    console.warn("[Depth] Using fallback depth map due to previous memory error");
+    console.warn(
+      "[Depth] Using fallback depth map due to previous memory error",
+    );
     onProgress?.(50, "Using simplified depth (memory constraints)...");
-    
+
     // Get image dimensions
     const img = new Image();
     img.crossOrigin = "anonymous";
@@ -241,7 +253,7 @@ export async function estimateDepth(
       img.onerror = () => reject(new Error("Failed to load image"));
       img.src = imageUrl;
     });
-    
+
     onProgress?.(100, "Done!");
     return createFallbackDepthMap(img.width, img.height);
   }
@@ -296,10 +308,10 @@ export async function estimateDepth(
     };
   } catch (error) {
     console.error("[Depth] Depth estimation failed:", error);
-    
+
     // Check for Android/mobile memory errors
     const errorMessage = error instanceof Error ? error.message : String(error);
-    const isMemoryError = 
+    const isMemoryError =
       errorMessage.includes("allocate") ||
       errorMessage.includes("buffer") ||
       errorMessage.includes("memory") ||
@@ -307,15 +319,17 @@ export async function estimateDepth(
       errorMessage.includes("RangeError") ||
       errorMessage.includes("Array buffer allocation") ||
       errorMessage.includes("session");
-    
+
     if (isMemoryError) {
-      console.warn("[Depth] Memory error detected - using fallback for this session");
+      console.warn(
+        "[Depth] Memory error detected - using fallback for this session",
+      );
       hasMemoryError = true;
       // Reset the pipeline to free memory
       depthPipeline = null;
       loadingPromise = null;
     }
-    
+
     // Get image dimensions for fallback
     onProgress?.(50, "Using simplified depth...");
     const img = new Image();
@@ -325,7 +339,7 @@ export async function estimateDepth(
       img.onerror = () => reject(new Error("Failed to load image"));
       img.src = imageUrl;
     });
-    
+
     onProgress?.(100, "Done!");
     return createFallbackDepthMap(img.width, img.height);
   }
@@ -340,7 +354,7 @@ export function sampleDepthAt(
   width: number,
   height: number,
   normalizedX: number,
-  normalizedY: number
+  normalizedY: number,
 ): number {
   const x = Math.floor(normalizedX * width);
   const y = Math.floor(normalizedY * height);

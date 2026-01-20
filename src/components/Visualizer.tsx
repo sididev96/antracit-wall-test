@@ -81,7 +81,7 @@ export function Visualizer() {
   });
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(
-    null
+    null,
   );
   const [depthAtPanel, setDepthAtPanel] = useState<number>(0.5);
   const [isOnWall, setIsOnWall] = useState<boolean>(false);
@@ -148,7 +148,7 @@ export function Visualizer() {
       } catch (wallError) {
         console.warn(
           "Wall segmentation failed, continuing without it:",
-          wallError
+          wallError,
         );
         setWallSegmentation(null);
       }
@@ -158,12 +158,12 @@ export function Visualizer() {
       if (walls && walls.wallArea > 0) {
         toast.success(
           `Wall detection complete! ${(walls.wallArea * 100).toFixed(
-            1
-          )}% of image is wall. Drag panel onto the wall.`
+            1,
+          )}% of image is wall. Drag panel onto the wall.`,
         );
       } else {
         toast.info(
-          "Ready! Drag panel to position. Wall detection unavailable."
+          "Ready! Drag panel to position. Wall detection unavailable.",
         );
       }
     } catch (error) {
@@ -194,7 +194,7 @@ export function Visualizer() {
       centerX: number,
       centerY: number,
       panelWidth: number,
-      panelHeight: number
+      panelHeight: number,
     ) => {
       if (!containerRef.current)
         return { rotateX: 0, rotateY: 0, scale: 1, onWall: false };
@@ -216,7 +216,7 @@ export function Visualizer() {
           wallSegmentation.width,
           wallSegmentation.height,
           normalizedX,
-          normalizedY
+          normalizedY,
         );
       }
 
@@ -230,7 +230,7 @@ export function Visualizer() {
           depthWidth,
           depthHeight,
           normalizedX,
-          normalizedY
+          normalizedY,
         );
 
         // Sample depth at left and right edges of the panel to calculate horizontal tilt
@@ -241,14 +241,14 @@ export function Visualizer() {
           depthWidth,
           depthHeight,
           leftX,
-          normalizedY
+          normalizedY,
         );
         const rightDepth = sampleDepthAt(
           depthData,
           depthWidth,
           depthHeight,
           rightX,
-          normalizedY
+          normalizedY,
         );
 
         // Sample depth at top and bottom edges for vertical tilt
@@ -259,14 +259,14 @@ export function Visualizer() {
           depthWidth,
           depthHeight,
           normalizedX,
-          topY
+          topY,
         );
         const bottomDepth = sampleDepthAt(
           depthData,
           depthWidth,
           depthHeight,
           normalizedX,
-          bottomY
+          bottomY,
         );
 
         // Calculate horizontal tilt (rotateY) based on left-right depth difference
@@ -297,7 +297,7 @@ export function Visualizer() {
         for (const plane of wallSegmentation.wallPlanes) {
           const dist = Math.sqrt(
             (normalizedX - plane.centerX) ** 2 +
-            (normalizedY - plane.centerY) ** 2
+              (normalizedY - plane.centerY) ** 2,
           );
           if (dist < minDist) {
             minDist = dist;
@@ -332,7 +332,7 @@ export function Visualizer() {
         onWall: false,
       };
     },
-    [wallSegmentation, depthMap]
+    [wallSegmentation, depthMap],
   );
 
   // Separate state for rotation to avoid infinite loops
@@ -356,7 +356,7 @@ export function Visualizer() {
       // Find the largest wall plane
       const largestWall = wallSegmentation.wallPlanes.reduce(
         (largest, plane) => (plane.area > largest.area ? plane : largest),
-        wallSegmentation.wallPlanes[0]
+        wallSegmentation.wallPlanes[0],
       );
 
       // Use the bounding box of the largest wall
@@ -435,8 +435,12 @@ export function Visualizer() {
     const rect = container.getBoundingClientRect();
 
     // Calculate panel dimensions locally to avoid dependency on values that change in this effect
-    const localDepthScale = Math.max(0.6, Math.min(1.4, 0.6 + depthAtPanel * 0.8));
-    const localScaledPanelHeight = basePanelSize.height * panelTransform.scale * localDepthScale;
+    const localDepthScale = Math.max(
+      0.6,
+      Math.min(1.4, 0.6 + depthAtPanel * 0.8),
+    );
+    const localScaledPanelHeight =
+      basePanelSize.height * panelTransform.scale * localDepthScale;
     const localScaledPanelWidth = localScaledPanelHeight * aspectRatio;
 
     // Calculate center of panel
@@ -448,7 +452,7 @@ export function Visualizer() {
       centerX,
       centerY,
       localScaledPanelWidth,
-      localScaledPanelHeight
+      localScaledPanelHeight,
     );
 
     // Only update rotation if change is significant (threshold: 2 degrees)
@@ -459,7 +463,10 @@ export function Visualizer() {
       const rotateYDiff = Math.abs(perspective.rotateY - prev.rotateY);
 
       // Only update if at least one axis has a significant change
-      if (rotateXDiff >= ROTATION_THRESHOLD || rotateYDiff >= ROTATION_THRESHOLD) {
+      if (
+        rotateXDiff >= ROTATION_THRESHOLD ||
+        rotateYDiff >= ROTATION_THRESHOLD
+      ) {
         return {
           rotateX: perspective.rotateX,
           rotateY: perspective.rotateY,
@@ -477,9 +484,9 @@ export function Visualizer() {
       depthMap.width,
       depthMap.height,
       normalizedX,
-      normalizedY
+      normalizedY,
     );
-    
+
     // Only update depth if change is significant (threshold: 0.05) to prevent infinite loops
     const DEPTH_THRESHOLD = 0.05;
     setDepthAtPanel((prev) => {
@@ -511,7 +518,7 @@ export function Visualizer() {
         y: e.clientY - panelTransform.y,
       });
     },
-    [selectedPanel, panelTransform.x, panelTransform.y]
+    [selectedPanel, panelTransform.x, panelTransform.y],
   );
 
   const handleMouseMove = useCallback(
@@ -522,7 +529,11 @@ export function Visualizer() {
       const newY = e.clientY - dragStart.y;
 
       // Constrain panel to wall boundaries if wall segmentation is available
-      if (wallSegmentation && wallSegmentation.wallMask.length > 0 && containerRef.current) {
+      if (
+        wallSegmentation &&
+        wallSegmentation.wallMask.length > 0 &&
+        containerRef.current
+      ) {
         const container = containerRef.current;
         const rect = container.getBoundingClientRect();
 
@@ -540,7 +551,7 @@ export function Visualizer() {
           wallSegmentation.width,
           wallSegmentation.height,
           normalizedX,
-          normalizedY
+          normalizedY,
         );
 
         // Check current position
@@ -553,7 +564,7 @@ export function Visualizer() {
           wallSegmentation.width,
           wallSegmentation.height,
           currentNormalizedX,
-          currentNormalizedY
+          currentNormalizedY,
         );
 
         // Allow movement if:
@@ -572,7 +583,15 @@ export function Visualizer() {
         y: newY,
       }));
     },
-    [isDragging, dragStart, wallSegmentation, scaledPanelWidth, scaledPanelHeight, panelTransform.x, panelTransform.y]
+    [
+      isDragging,
+      dragStart,
+      wallSegmentation,
+      scaledPanelWidth,
+      scaledPanelHeight,
+      panelTransform.x,
+      panelTransform.y,
+    ],
   );
 
   const handleMouseUp = useCallback(() => {
@@ -591,7 +610,7 @@ export function Visualizer() {
         y: touch.clientY - panelTransform.y,
       });
     },
-    [selectedPanel, panelTransform.x, panelTransform.y]
+    [selectedPanel, panelTransform.x, panelTransform.y],
   );
 
   const handleTouchMove = useCallback(
@@ -603,7 +622,11 @@ export function Visualizer() {
       const newY = touch.clientY - dragStart.y;
 
       // Constrain panel to wall boundaries if wall segmentation is available
-      if (wallSegmentation && wallSegmentation.wallMask.length > 0 && containerRef.current) {
+      if (
+        wallSegmentation &&
+        wallSegmentation.wallMask.length > 0 &&
+        containerRef.current
+      ) {
         const container = containerRef.current;
         const rect = container.getBoundingClientRect();
 
@@ -621,7 +644,7 @@ export function Visualizer() {
           wallSegmentation.width,
           wallSegmentation.height,
           normalizedX,
-          normalizedY
+          normalizedY,
         );
 
         // Check current position
@@ -634,7 +657,7 @@ export function Visualizer() {
           wallSegmentation.width,
           wallSegmentation.height,
           currentNormalizedX,
-          currentNormalizedY
+          currentNormalizedY,
         );
 
         // Allow movement if:
@@ -653,7 +676,15 @@ export function Visualizer() {
         y: newY,
       }));
     },
-    [isDragging, dragStart, wallSegmentation, scaledPanelWidth, scaledPanelHeight, panelTransform.x, panelTransform.y]
+    [
+      isDragging,
+      dragStart,
+      wallSegmentation,
+      scaledPanelWidth,
+      scaledPanelHeight,
+      panelTransform.x,
+      panelTransform.y,
+    ],
   );
 
   const handleTouchEnd = useCallback(() => {
@@ -683,7 +714,10 @@ export function Visualizer() {
 
   // Helper function to find a valid wall position within a rectangle (not on foreground)
   const findValidWallPosition = useCallback(
-    (rect: { center: { x: number; y: number }; boundingBox: { xmin: number; ymin: number; xmax: number; ymax: number } }) => {
+    (rect: {
+      center: { x: number; y: number };
+      boundingBox: { xmin: number; ymin: number; xmax: number; ymax: number };
+    }) => {
       if (!wallSegmentation || wallSegmentation.wallMask.length === 0) {
         return rect.center; // Fall back to geometric center
       }
@@ -691,7 +725,9 @@ export function Visualizer() {
       const { wallMask, width, height } = wallSegmentation;
 
       // First check if the geometric center is on the wall
-      if (isPointOnWall(wallMask, width, height, rect.center.x, rect.center.y)) {
+      if (
+        isPointOnWall(wallMask, width, height, rect.center.x, rect.center.y)
+      ) {
         return rect.center;
       }
 
@@ -713,8 +749,14 @@ export function Visualizer() {
           ];
 
           for (const offset of offsets) {
-            const testX = Math.max(xmin + 0.05, Math.min(xmax - 0.05, rect.center.x + offset.x));
-            const testY = Math.max(ymin + 0.05, Math.min(ymax - 0.05, rect.center.y + offset.y));
+            const testX = Math.max(
+              xmin + 0.05,
+              Math.min(xmax - 0.05, rect.center.x + offset.x),
+            );
+            const testY = Math.max(
+              ymin + 0.05,
+              Math.min(ymax - 0.05, rect.center.y + offset.y),
+            );
 
             if (isPointOnWall(wallMask, width, height, testX, testY)) {
               return { x: testX, y: testY };
@@ -726,7 +768,7 @@ export function Visualizer() {
       // If no valid point found, return the geometric center anyway
       return rect.center;
     },
-    [wallSegmentation]
+    [wallSegmentation],
   );
 
   // Snap panel to a specific detected rectangle by index
@@ -795,7 +837,7 @@ export function Visualizer() {
           depthMap.width,
           depthMap.height,
           normalizedX,
-          normalizedY
+          normalizedY,
         );
         const targetDepthFactor = 0.6 + targetDepth * 0.8;
         targetDepthScale = Math.max(0.6, Math.min(1.4, targetDepthFactor));
@@ -811,11 +853,24 @@ export function Visualizer() {
       const baseSize = getBasePanelSize();
       const newScale = targetHeight / (baseSize.height * targetDepthScale);
 
-      console.log("[SnapToRect] Target dimensions:", targetWidth, "x", targetHeight);
+      console.log(
+        "[SnapToRect] Target dimensions:",
+        targetWidth,
+        "x",
+        targetHeight,
+      );
       console.log("[SnapToRect] Base size:", baseSize);
-      console.log("[SnapToRect] Target depth:", targetDepth, "scale:", targetDepthScale);
+      console.log(
+        "[SnapToRect] Target depth:",
+        targetDepth,
+        "scale:",
+        targetDepthScale,
+      );
       console.log("[SnapToRect] Calculated scale:", newScale);
-      console.log("[SnapToRect] Expected rendered height:", baseSize.height * newScale * targetDepthScale);
+      console.log(
+        "[SnapToRect] Expected rendered height:",
+        baseSize.height * newScale * targetDepthScale,
+      );
 
       setPanelTransform({
         x: targetX,
@@ -828,7 +883,7 @@ export function Visualizer() {
         targetX + targetWidth / 2,
         targetY + targetHeight / 2,
         targetWidth,
-        targetHeight
+        targetHeight,
       );
       setPanelRotation({
         rotateX: perspective.rotateX,
@@ -844,7 +899,7 @@ export function Visualizer() {
       calculateWallAwarePerspective,
       depthMap,
       getBasePanelSize,
-    ]
+    ],
   );
 
   // Snap panel to best detected rectangle
@@ -875,7 +930,7 @@ export function Visualizer() {
     const bestRect = findBestRectangleForPanel(
       rectangles,
       panelAspectRatio,
-      0.01
+      0.01,
     );
 
     if (!bestRect) {
@@ -930,7 +985,7 @@ export function Visualizer() {
         depthMap.width,
         depthMap.height,
         normalizedX,
-        normalizedY
+        normalizedY,
       );
       const targetDepthFactor = 0.6 + targetDepth * 0.8;
       targetDepthScale = Math.max(0.6, Math.min(1.4, targetDepthFactor));
@@ -960,7 +1015,7 @@ export function Visualizer() {
       targetX + targetWidth / 2,
       targetY + targetHeight / 2,
       targetWidth,
-      targetHeight
+      targetHeight,
     );
     setPanelRotation({
       rotateX: perspective.rotateX,
@@ -979,7 +1034,11 @@ export function Visualizer() {
 
   // Helper function to find nearest wall point from any position (normalized coords)
   const findNearestWallPoint = useCallback(
-    (normalizedX: number, normalizedY: number, searchRadius: number = 0.3): { x: number; y: number } | null => {
+    (
+      normalizedX: number,
+      normalizedY: number,
+      searchRadius: number = 0.3,
+    ): { x: number; y: number } | null => {
       if (!wallSegmentation || wallSegmentation.wallMask.length === 0) {
         return null;
       }
@@ -995,8 +1054,14 @@ export function Visualizer() {
       const steps = 20;
       for (let radius = 0.02; radius <= searchRadius; radius += 0.02) {
         for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / steps) {
-          const testX = Math.max(0, Math.min(1, normalizedX + Math.cos(angle) * radius));
-          const testY = Math.max(0, Math.min(1, normalizedY + Math.sin(angle) * radius));
+          const testX = Math.max(
+            0,
+            Math.min(1, normalizedX + Math.cos(angle) * radius),
+          );
+          const testY = Math.max(
+            0,
+            Math.min(1, normalizedY + Math.sin(angle) * radius),
+          );
 
           if (isPointOnWall(wallMask, width, height, testX, testY)) {
             return { x: testX, y: testY };
@@ -1006,7 +1071,7 @@ export function Visualizer() {
 
       return null;
     },
-    [wallSegmentation]
+    [wallSegmentation],
   );
 
   const handleSelectPanel = useCallback(
@@ -1025,7 +1090,7 @@ export function Visualizer() {
         // Find the largest wall plane
         const largestWall = wallSegmentation.wallPlanes.reduce(
           (largest, plane) => (plane.area > largest.area ? plane : largest),
-          wallSegmentation.wallPlanes[0]
+          wallSegmentation.wallPlanes[0],
         );
 
         // Get initial position at the center of the largest wall
@@ -1040,12 +1105,16 @@ export function Visualizer() {
             wallSegmentation.width,
             wallSegmentation.height,
             normalizedCenterX,
-            normalizedCenterY
+            normalizedCenterY,
           );
 
           if (!isOnWall) {
             // Find nearest wall point within the wall plane's bounding box
-            const nearestPoint = findNearestWallPoint(normalizedCenterX, normalizedCenterY, 0.5);
+            const nearestPoint = findNearestWallPoint(
+              normalizedCenterX,
+              normalizedCenterY,
+              0.5,
+            );
             if (nearestPoint) {
               normalizedCenterX = nearestPoint.x;
               normalizedCenterY = nearestPoint.y;
@@ -1088,11 +1157,15 @@ export function Visualizer() {
             wallSegmentation.width,
             wallSegmentation.height,
             normalizedCenterX,
-            normalizedCenterY
+            normalizedCenterY,
           );
 
           if (!isOnWall) {
-            const nearestPoint = findNearestWallPoint(normalizedCenterX, normalizedCenterY, 0.5);
+            const nearestPoint = findNearestWallPoint(
+              normalizedCenterX,
+              normalizedCenterY,
+              0.5,
+            );
             if (nearestPoint) {
               normalizedCenterX = nearestPoint.x;
               normalizedCenterY = nearestPoint.y;
@@ -1114,11 +1187,11 @@ export function Visualizer() {
         // No wall segmentation - place at default position
         setPanelTransform({ x: 50, y: 50, scale: 1 });
         toast.success(
-          `${panel.name} selected! Drag it to position on your wall.`
+          `${panel.name} selected! Drag it to position on your wall.`,
         );
       }
     },
-    [wallSegmentation, findNearestWallPoint]
+    [wallSegmentation, findNearestWallPoint],
   );
 
   const handleDownload = useCallback(async () => {
@@ -1177,7 +1250,7 @@ export function Visualizer() {
                 x * maskScaleX,
                 y * maskScaleY,
                 step * maskScaleX,
-                step * maskScaleY
+                step * maskScaleY,
               );
             }
           }
@@ -1208,7 +1281,7 @@ export function Visualizer() {
         -scaledPanelWidth / 2,
         -scaledPanelHeight / 2,
         scaledPanelWidth,
-        scaledPanelHeight
+        scaledPanelHeight,
       );
 
       // Restore panel transform context
@@ -1233,13 +1306,13 @@ export function Visualizer() {
           0,
           0,
           canvas.width,
-          canvas.height
+          canvas.height,
         );
         const mainImageData = ctx.getImageData(
           0,
           0,
           canvas.width,
-          canvas.height
+          canvas.height,
         );
 
         const maskScaleX = canvas.width / wallSegmentation.width;
@@ -1327,7 +1400,7 @@ export function Visualizer() {
                   "flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all duration-300",
                   i <= currentStepIndex
                     ? "bg-anthracite text-primary-foreground"
-                    : "bg-muted text-muted-foreground"
+                    : "bg-muted text-muted-foreground",
                 )}
               >
                 <span className="w-5 h-5 rounded-full bg-current/20 flex items-center justify-center text-xs">
@@ -1341,7 +1414,7 @@ export function Visualizer() {
                     "w-4 h-4 mx-1",
                     i < currentStepIndex
                       ? "text-anthracite"
-                      : "text-muted-foreground"
+                      : "text-muted-foreground",
                   )}
                 />
               )}
@@ -1404,7 +1477,7 @@ export function Visualizer() {
                         ? isOnWall
                           ? "bg-green-100 text-green-700"
                           : "bg-muted text-muted-foreground"
-                        : "bg-muted text-muted-foreground"
+                        : "bg-muted text-muted-foreground",
                     )}
                   >
                     <Move className="w-4 h-4" />
@@ -1534,24 +1607,26 @@ export function Visualizer() {
                       wallSegmentation?.detectedRectangles &&
                       wallSegmentation.detectedRectangles.length > 0 && (
                         <div className="absolute inset-0 pointer-events-none">
-                          {wallSegmentation.detectedRectangles.map((rect, index) => {
-                            // Find a valid position on the wall (not blocked by foreground)
-                            const validPos = findValidWallPosition(rect);
-                            return (
-                              <button
-                                key={index}
-                                onClick={() => handleSnapToRectangle(index)}
-                                className="absolute w-10 h-10 -translate-x-1/2 -translate-y-1/2 rounded-full bg-anthracite/80 hover:bg-anthracite text-white border-2 border-white shadow-lg pointer-events-auto transition-all duration-200 hover:scale-110 flex items-center justify-center text-sm font-semibold"
-                                style={{
-                                  left: `${validPos.x * 100}%`,
-                                  top: `${validPos.y * 100}%`,
-                                }}
-                                title={`Place panel on wall ${index + 1}`}
-                              >
-                                {index + 1}
-                              </button>
-                            );
-                          })}
+                          {wallSegmentation.detectedRectangles.map(
+                            (rect, index) => {
+                              // Find a valid position on the wall (not blocked by foreground)
+                              const validPos = findValidWallPosition(rect);
+                              return (
+                                <button
+                                  key={index}
+                                  onClick={() => handleSnapToRectangle(index)}
+                                  className="absolute w-10 h-10 -translate-x-1/2 -translate-y-1/2 rounded-full bg-anthracite/80 hover:bg-anthracite text-white border-2 border-white shadow-lg pointer-events-auto transition-all duration-200 hover:scale-110 flex items-center justify-center text-sm font-semibold"
+                                  style={{
+                                    left: `${validPos.x * 100}%`,
+                                    top: `${validPos.y * 100}%`,
+                                  }}
+                                  title={`Place panel on wall ${index + 1}`}
+                                >
+                                  {index + 1}
+                                </button>
+                              );
+                            },
+                          )}
                         </div>
                       )}
 
@@ -1561,7 +1636,7 @@ export function Visualizer() {
                         <div
                           className={cn(
                             "absolute origin-center pointer-events-auto",
-                            isDragging ? "cursor-grabbing" : "cursor-grab"
+                            isDragging ? "cursor-grabbing" : "cursor-grab",
                           )}
                           style={{
                             left: panelTransform.x,
@@ -1571,7 +1646,9 @@ export function Visualizer() {
                             transform: `rotateX(${panelRotation.rotateX}deg) rotateY(${panelRotation.rotateY}deg)`,
                             transformStyle: "preserve-3d",
                             // Use faster transition with ease-out for smoother feel, no transition while dragging
-                            transition: isDragging ? "none" : "transform 150ms ease-out",
+                            transition: isDragging
+                              ? "none"
+                              : "transform 150ms ease-out",
                           }}
                           onMouseDown={handleMouseDown}
                           onTouchStart={handleTouchStart}
@@ -1614,12 +1691,14 @@ export function Visualizer() {
                           className="absolute top-0 left-0 max-h-[75vh] w-auto max-w-full h-auto pointer-events-none"
                           draggable={false}
                           style={{
-                            WebkitMaskImage: `url(${enhancedForegroundMaskUrl ||
+                            WebkitMaskImage: `url(${
+                              enhancedForegroundMaskUrl ||
                               wallSegmentation?.foregroundMaskUrl
-                              })`,
-                            maskImage: `url(${enhancedForegroundMaskUrl ||
+                            })`,
+                            maskImage: `url(${
+                              enhancedForegroundMaskUrl ||
                               wallSegmentation?.foregroundMaskUrl
-                              })`,
+                            })`,
                             WebkitMaskSize: "100% 100%",
                             maskSize: "100% 100%",
                             WebkitMaskRepeat: "no-repeat",
