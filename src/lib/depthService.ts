@@ -94,7 +94,9 @@ function configureOnnxRuntime(): void {
         mjs: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnxVersion}/dist/ort-wasm-simd-threaded.mjs`,
         wasm: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnxVersion}/dist/ort-wasm-simd-threaded.wasm`,
       };
-      console.log(`[Depth] ONNX configured with non-JSEP WASM paths (v${onnxVersion})`);
+      console.log(
+        `[Depth] ONNX configured with non-JSEP WASM paths (v${onnxVersion})`,
+      );
     } else {
       // Setup fallback structure
       if (!env.backends) (env as any).backends = {};
@@ -109,7 +111,9 @@ function configureOnnxRuntime(): void {
         mjs: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnxVersion}/dist/ort-wasm-simd-threaded.mjs`,
         wasm: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnxVersion}/dist/ort-wasm-simd-threaded.wasm`,
       };
-      console.log(`[Depth] Created ONNX config with non-JSEP WASM paths (v${onnxVersion})`);
+      console.log(
+        `[Depth] Created ONNX config with non-JSEP WASM paths (v${onnxVersion})`,
+      );
     }
   } else {
     console.log(

@@ -684,9 +684,7 @@ function detectRectanglesInMask(
  * Resize an image to fit within max dimensions while maintaining aspect ratio
  * Returns a data URL of the resized image along with original and new dimensions
  */
-async function resizeImageForSegmentation(
-  imageUrl: string,
-): Promise<{
+async function resizeImageForSegmentation(imageUrl: string): Promise<{
   dataUrl: string;
   scale: number;
   originalWidth: number;
