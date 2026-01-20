@@ -784,16 +784,17 @@ export function Visualizer() {
       }
 
       // Use detectedRectangles if available, otherwise fallback to wallPlanes
-      const rectangles = wallSegmentation.detectedRectangles?.length > 0 
-        ? wallSegmentation.detectedRectangles 
-        : wallSegmentation.wallPlanes?.map(plane => ({
-            center: { x: plane.centerX, y: plane.centerY },
-            boundingBox: plane.boundingBox,
-            width: plane.boundingBox.xmax - plane.boundingBox.xmin,
-            height: plane.boundingBox.ymax - plane.boundingBox.ymin,
-            area: plane.area,
-          })) || [];
-      
+      const rectangles =
+        wallSegmentation.detectedRectangles?.length > 0
+          ? wallSegmentation.detectedRectangles
+          : wallSegmentation.wallPlanes?.map((plane) => ({
+              center: { x: plane.centerX, y: plane.centerY },
+              boundingBox: plane.boundingBox,
+              width: plane.boundingBox.xmax - plane.boundingBox.xmin,
+              height: plane.boundingBox.ymax - plane.boundingBox.ymin,
+              area: plane.area,
+            })) || [];
+
       if (!rectangles || rectangleIndex >= rectangles.length) {
         return;
       }
@@ -925,22 +926,25 @@ export function Visualizer() {
     }
 
     // Use detectedRectangles if available, otherwise fallback to wallPlanes
-    const rectangles = wallSegmentation.detectedRectangles?.length > 0
-      ? wallSegmentation.detectedRectangles
-      : wallSegmentation.wallPlanes?.map(plane => ({
-          center: { x: plane.centerX, y: plane.centerY },
-          boundingBox: plane.boundingBox,
-          width: plane.boundingBox.xmax - plane.boundingBox.xmin,
-          height: plane.boundingBox.ymax - plane.boundingBox.ymin,
-          area: plane.area,
-        })) || [];
-        
+    const rectangles =
+      wallSegmentation.detectedRectangles?.length > 0
+        ? wallSegmentation.detectedRectangles
+        : wallSegmentation.wallPlanes?.map((plane) => ({
+            center: { x: plane.centerX, y: plane.centerY },
+            boundingBox: plane.boundingBox,
+            width: plane.boundingBox.xmax - plane.boundingBox.xmin,
+            height: plane.boundingBox.ymax - plane.boundingBox.ymin,
+            area: plane.area,
+          })) || [];
+
     if (!rectangles || rectangles.length === 0) {
       toast.error("No rectangular wall areas detected");
       return;
     }
-    
-    console.log(`[Visualizer] handleSnapToWall: Using ${rectangles.length} rectangles`);
+
+    console.log(
+      `[Visualizer] handleSnapToWall: Using ${rectangles.length} rectangles`,
+    );
 
     const container = containerRef.current;
     const rect = container.getBoundingClientRect();
@@ -1625,45 +1629,54 @@ export function Visualizer() {
                     )}
 
                     {/* Wall selection buttons - show circle buttons at center of each detected wall */}
-                    {selectedPanel && wallSegmentation && (() => {
-                      // Use detectedRectangles if available, otherwise fallback to wallPlanes
-                      const rectangles = wallSegmentation.detectedRectangles?.length > 0 
-                        ? wallSegmentation.detectedRectangles 
-                        : wallSegmentation.wallPlanes?.map(plane => ({
-                            center: { x: plane.centerX, y: plane.centerY },
-                            boundingBox: plane.boundingBox,
-                            width: plane.boundingBox.xmax - plane.boundingBox.xmin,
-                            height: plane.boundingBox.ymax - plane.boundingBox.ymin,
-                            area: plane.area,
-                          })) || [];
-                      
-                      console.log(`[Visualizer] Wall buttons: ${rectangles.length} rectangles available`);
-                      
-                      if (rectangles.length === 0) return null;
-                      
-                      return (
-                        <div className="absolute inset-0 pointer-events-none">
-                          {rectangles.map((rect, index) => {
-                            // Find a valid position on the wall (not blocked by foreground)
-                            const validPos = findValidWallPosition(rect);
-                            return (
-                              <button
-                                key={index}
-                                onClick={() => handleSnapToRectangle(index)}
-                                className="absolute w-10 h-10 -translate-x-1/2 -translate-y-1/2 rounded-full bg-anthracite/80 hover:bg-anthracite text-white border-2 border-white shadow-lg pointer-events-auto transition-all duration-200 hover:scale-110 flex items-center justify-center text-sm font-semibold"
-                                style={{
-                                  left: `${validPos.x * 100}%`,
-                                  top: `${validPos.y * 100}%`,
-                                }}
-                                title={`Place panel on wall ${index + 1}`}
-                              >
-                                {index + 1}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      );
-                    })()}
+                    {selectedPanel &&
+                      wallSegmentation &&
+                      (() => {
+                        // Use detectedRectangles if available, otherwise fallback to wallPlanes
+                        const rectangles =
+                          wallSegmentation.detectedRectangles?.length > 0
+                            ? wallSegmentation.detectedRectangles
+                            : wallSegmentation.wallPlanes?.map((plane) => ({
+                                center: { x: plane.centerX, y: plane.centerY },
+                                boundingBox: plane.boundingBox,
+                                width:
+                                  plane.boundingBox.xmax -
+                                  plane.boundingBox.xmin,
+                                height:
+                                  plane.boundingBox.ymax -
+                                  plane.boundingBox.ymin,
+                                area: plane.area,
+                              })) || [];
+
+                        console.log(
+                          `[Visualizer] Wall buttons: ${rectangles.length} rectangles available`,
+                        );
+
+                        if (rectangles.length === 0) return null;
+
+                        return (
+                          <div className="absolute inset-0 pointer-events-none">
+                            {rectangles.map((rect, index) => {
+                              // Find a valid position on the wall (not blocked by foreground)
+                              const validPos = findValidWallPosition(rect);
+                              return (
+                                <button
+                                  key={index}
+                                  onClick={() => handleSnapToRectangle(index)}
+                                  className="absolute w-10 h-10 -translate-x-1/2 -translate-y-1/2 rounded-full bg-anthracite/80 hover:bg-anthracite text-white border-2 border-white shadow-lg pointer-events-auto transition-all duration-200 hover:scale-110 flex items-center justify-center text-sm font-semibold"
+                                  style={{
+                                    left: `${validPos.x * 100}%`,
+                                    top: `${validPos.y * 100}%`,
+                                  }}
+                                  title={`Place panel on wall ${index + 1}`}
+                                >
+                                  {index + 1}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        );
+                      })()}
 
                     {/* Draggable panel overlay */}
                     {selectedPanel && panelDimensions.loaded && (
