@@ -88,12 +88,13 @@ function configureOnnxRuntime(): void {
       (onnxEnv as any).wasm.numThreads = 1;
 
       // Use non-JSEP WASM files that work without SharedArrayBuffer
-      const onnxVersion = "1.21.0";
+      // CRITICAL: Must match the EXACT version used by transformers.js 3.8.1
+      const onnxVersion = "1.22.0-dev.20250409-89f8206ba4";
       (onnxEnv as any).wasm.wasmPaths = {
         mjs: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnxVersion}/dist/ort-wasm-simd-threaded.mjs`,
         wasm: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnxVersion}/dist/ort-wasm-simd-threaded.wasm`,
       };
-      console.log("[Depth] ONNX configured with non-JSEP WASM paths");
+      console.log(`[Depth] ONNX configured with non-JSEP WASM paths (v${onnxVersion})`);
     } else {
       // Setup fallback structure
       if (!env.backends) (env as any).backends = {};
@@ -101,13 +102,14 @@ function configureOnnxRuntime(): void {
       if (!(env.backends.onnx as any).wasm)
         (env.backends.onnx as any).wasm = {};
 
-      const onnxVersion = "1.21.0";
+      // CRITICAL: Must match the EXACT version used by transformers.js 3.8.1
+      const onnxVersion = "1.22.0-dev.20250409-89f8206ba4";
       (env.backends.onnx as any).wasm.numThreads = 1;
       (env.backends.onnx as any).wasm.wasmPaths = {
         mjs: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnxVersion}/dist/ort-wasm-simd-threaded.mjs`,
         wasm: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnxVersion}/dist/ort-wasm-simd-threaded.wasm`,
       };
-      console.log("[Depth] Created ONNX config with non-JSEP WASM paths");
+      console.log(`[Depth] Created ONNX config with non-JSEP WASM paths (v${onnxVersion})`);
     }
   } else {
     console.log(

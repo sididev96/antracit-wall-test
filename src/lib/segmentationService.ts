@@ -143,14 +143,15 @@ function configureOnnxForMobile(): void {
       // The default .jsep variants require SharedArrayBuffer and cause crashes without it
       // Using the non-jsep variants from CDN works in all environments
       // See: https://github.com/huggingface/transformers.js/issues/1242
-      const onnxVersion = "1.21.0";
+      // IMPORTANT: Must match the EXACT version used by transformers.js 3.8.1
+      const onnxVersion = "1.22.0-dev.20250409-89f8206ba4";
       const newWasmPaths = {
         mjs: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnxVersion}/dist/ort-wasm-simd-threaded.mjs`,
         wasm: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnxVersion}/dist/ort-wasm-simd-threaded.wasm`,
       };
       (onnxEnv as any).wasm.wasmPaths = newWasmPaths;
       console.log(
-        `[Segmentation] Set ONNX WASM paths to non-JSEP variants (onnxruntime-web@${onnxVersion})`,
+        `[Segmentation] Set ONNX WASM paths to non-JSEP variants (v${onnxVersion})`,
       );
       console.log(
         "[Segmentation] New wasmPaths:",
@@ -173,14 +174,15 @@ function configureOnnxForMobile(): void {
         (env.backends.onnx as any).wasm = {};
       }
 
-      const onnxVersion = "1.21.0";
+      // IMPORTANT: Must match the EXACT version used by transformers.js 3.8.1
+      const onnxVersion = "1.22.0-dev.20250409-89f8206ba4";
       (env.backends.onnx as any).wasm.numThreads = 1;
       (env.backends.onnx as any).wasm.wasmPaths = {
         mjs: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnxVersion}/dist/ort-wasm-simd-threaded.mjs`,
         wasm: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnxVersion}/dist/ort-wasm-simd-threaded.wasm`,
       };
       console.log(
-        "[Segmentation] Created ONNX wasm config structure with non-JSEP WASM paths",
+        `[Segmentation] Created ONNX wasm config structure with non-JSEP WASM paths (v${onnxVersion})`,
       );
       onnxConfigured = true;
     }
