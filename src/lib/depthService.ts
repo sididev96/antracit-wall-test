@@ -2,7 +2,14 @@ import {
   pipeline,
   DepthEstimationPipeline,
   RawImage,
+  env,
 } from "@huggingface/transformers";
+
+// Check if we're in a secure context (Cache API requires secure context)
+// localhost is always secure, but local IP addresses over HTTP are not
+const isInSecureContext = typeof window !== 'undefined' && (window.isSecureContext ?? false);
+env.useBrowserCache = isInSecureContext;
+console.log(`[Depth Init] Secure context: ${isInSecureContext}, useBrowserCache: ${env.useBrowserCache}`);
 
 // Singleton to hold the depth estimation pipeline
 let depthPipeline: DepthEstimationPipeline | null = null;
@@ -13,12 +20,92 @@ let loadingPromise: Promise<DepthEstimationPipeline> | null = null;
 let hasMemoryError = false;
 
 /**
+ * Detect if we're running on a mobile device
+ */
+function isMobileDevice(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
+}
+
+/**
  * Detect if we're running on Android specifically
  * Android Chrome has known WASM memory limitations
  */
 function isAndroid(): boolean {
   if (typeof navigator === 'undefined') return false;
   return /Android/i.test(navigator.userAgent || '');
+}
+
+/**
+ * Check if SharedArrayBuffer is available (requires secure context + COOP/COEP headers)
+ */
+function isSharedArrayBufferAvailable(): boolean {
+  try {
+    if (typeof SharedArrayBuffer === 'undefined') {
+      return false;
+    }
+    new SharedArrayBuffer(1);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * Configure ONNX Runtime for the current environment
+ * Must be called before loading the pipeline
+ */
+let onnxConfigured = false;
+function configureOnnxRuntime(): void {
+  if (onnxConfigured) return;
+  
+  const mobile = isMobileDevice();
+  const hasSharedArrayBuffer = isSharedArrayBufferAvailable();
+  const needsSingleThreaded = mobile || !hasSharedArrayBuffer;
+  
+  console.log("[Depth] Environment detection:");
+  console.log("[Depth] - Mobile:", mobile);
+  console.log("[Depth] - SharedArrayBuffer available:", hasSharedArrayBuffer);
+  console.log("[Depth] - Needs single-threaded:", needsSingleThreaded);
+  
+  if (needsSingleThreaded) {
+    const reason = !hasSharedArrayBuffer 
+      ? "SharedArrayBuffer unavailable" 
+      : "mobile device";
+    console.log(`[Depth] Configuring ONNX for single-threaded mode. Reason: ${reason}`);
+    
+    const onnxEnv = env.backends?.onnx;
+    
+    if (onnxEnv && (onnxEnv as any).wasm) {
+      (onnxEnv as any).wasm.numThreads = 1;
+      
+      // Use non-JSEP WASM files that work without SharedArrayBuffer
+      const onnxVersion = "1.21.0";
+      (onnxEnv as any).wasm.wasmPaths = {
+        mjs: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnxVersion}/dist/ort-wasm-simd-threaded.mjs`,
+        wasm: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnxVersion}/dist/ort-wasm-simd-threaded.wasm`,
+      };
+      console.log("[Depth] ONNX configured with non-JSEP WASM paths");
+    } else {
+      // Setup fallback structure
+      if (!env.backends) (env as any).backends = {};
+      if (!env.backends.onnx) (env.backends as any).onnx = {};
+      if (!(env.backends.onnx as any).wasm) (env.backends.onnx as any).wasm = {};
+      
+      const onnxVersion = "1.21.0";
+      (env.backends.onnx as any).wasm.numThreads = 1;
+      (env.backends.onnx as any).wasm.wasmPaths = {
+        mjs: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnxVersion}/dist/ort-wasm-simd-threaded.mjs`,
+        wasm: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnxVersion}/dist/ort-wasm-simd-threaded.wasm`,
+      };
+      console.log("[Depth] Created ONNX config with non-JSEP WASM paths");
+    }
+  } else {
+    console.log("[Depth] Using default ONNX config (secure context with SharedArrayBuffer)");
+  }
+  
+  onnxConfigured = true;
 }
 
 export interface DepthMapResult {
@@ -92,6 +179,9 @@ export async function initDepthPipeline(
 
   loadingPromise = (async () => {
     try {
+      // Configure ONNX runtime for the current environment
+      configureOnnxRuntime();
+      
       onProgress?.(0, "Loading depth estimation model...");
 
       // Create the depth estimation pipeline with the small model for faster loading

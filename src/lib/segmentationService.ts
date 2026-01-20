@@ -1,9 +1,170 @@
 import { pipeline, env, RawImage } from "@huggingface/transformers";
 
 // Configure transformers.js for browser usage
-// Allow local models and enable caching
 env.allowLocalModels = false;
-env.useBrowserCache = true;
+
+// Check if we're in a secure context (Cache API requires secure context)
+// localhost is always secure, but local IP addresses over HTTP are not
+const isInSecureContext = typeof window !== 'undefined' && (window.isSecureContext ?? false);
+env.useBrowserCache = isInSecureContext;
+console.log(`[Segmentation Init] Secure context: ${isInSecureContext}, useBrowserCache: ${env.useBrowserCache}`);
+
+/**
+ * Detect if we're running on a mobile/Android device
+ * These devices often have limited WASM memory and need smaller image sizes
+ */
+function isMobileDevice(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
+}
+
+/**
+ * Detect iOS specifically - iOS Safari has severe memory issues with transformers.js v3
+ */
+function isIOS(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  // iOS detection - includes iPhone, iPad, iPod
+  // Also detect iPadOS 13+ which reports as Mac
+  return /iPhone|iPad|iPod/i.test(ua) || 
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+/**
+ * Check if SharedArrayBuffer is available (requires secure context + COOP/COEP headers)
+ * SharedArrayBuffer is needed for ONNX Runtime multi-threading.
+ * It's NOT available when:
+ * 1. Accessing via local IP (e.g., 192.168.x.x) over HTTP (not secure context)
+ * 2. Missing COOP/COEP headers
+ * 3. Some mobile browsers
+ */
+function isSharedArrayBufferAvailable(): boolean {
+  try {
+    // Check if SharedArrayBuffer exists and is constructible
+    if (typeof SharedArrayBuffer === 'undefined') {
+      console.log("[Segmentation] SharedArrayBuffer is undefined");
+      return false;
+    }
+    // Try to construct a small one to verify it works
+    new SharedArrayBuffer(1);
+    console.log("[Segmentation] SharedArrayBuffer is available");
+    return true;
+  } catch (e) {
+    console.log("[Segmentation] SharedArrayBuffer construction failed:", e);
+    return false;
+  }
+}
+
+/**
+ * Check if running in a secure context
+ * localhost is always secure, but local IP addresses over HTTP are not
+ */
+function isSecureContext(): boolean {
+  if (typeof window === 'undefined') return false;
+  const secure = window.isSecureContext ?? false;
+  console.log("[Segmentation] Secure context:", secure);
+  console.log("[Segmentation] Current origin:", window.location?.origin);
+  return secure;
+}
+
+/**
+ * Configure ONNX Runtime for the current environment
+ * 
+ * CRITICAL: This function handles multiple scenarios:
+ * 1. Secure context (localhost or HTTPS) with SharedArrayBuffer -> multi-threaded OK
+ * 2. Non-secure context (local IP over HTTP) -> must use single-threaded + non-JSEP WASM
+ * 3. Mobile devices (iOS/Android) -> single-threaded + non-JSEP WASM (memory issues)
+ * 
+ * The .jsep WASM files cause crashes when SharedArrayBuffer is unavailable.
+ * Using the non-jsep variants from CDN fixes this issue.
+ */
+let onnxConfigured = false;
+function configureOnnxForMobile(): void {
+  // Only configure once
+  if (onnxConfigured) {
+    console.log("[Segmentation] ONNX already configured, skipping");
+    return;
+  }
+  
+  const mobile = isMobileDevice();
+  const ios = isIOS();
+  const secure = isSecureContext();
+  const hasSharedArrayBuffer = isSharedArrayBufferAvailable();
+  
+  console.log("[Segmentation] Environment detection:");
+  console.log("[Segmentation] - Mobile:", mobile);
+  console.log("[Segmentation] - iOS:", ios);
+  console.log("[Segmentation] - Secure context:", secure);
+  console.log("[Segmentation] - SharedArrayBuffer available:", hasSharedArrayBuffer);
+  console.log("[Segmentation] env.backends.onnx exists:", !!env.backends?.onnx);
+  console.log("[Segmentation] env.backends.onnx.wasm exists:", !!(env.backends?.onnx as any)?.wasm);
+  
+  // Need single-threaded mode if: mobile OR no SharedArrayBuffer (non-secure context)
+  const needsSingleThreaded = mobile || !hasSharedArrayBuffer;
+  
+  if (needsSingleThreaded) {
+    const reason = !hasSharedArrayBuffer 
+      ? "SharedArrayBuffer unavailable (non-secure context or missing headers)" 
+      : "mobile device";
+    console.log(`[Segmentation] Configuring ONNX for single-threaded mode. Reason: ${reason}`);
+    
+    // The env.backends.onnx object should be populated by the onnx backend now
+    // It references the actual ONNX_ENV from onnxruntime-web
+    const onnxEnv = env.backends?.onnx;
+    
+    if (onnxEnv && (onnxEnv as any).wasm) {
+      console.log("[Segmentation] Found existing ONNX wasm config");
+      console.log("[Segmentation] Current wasmPaths:", (onnxEnv as any).wasm.wasmPaths);
+      
+      // Set single-threaded mode
+      (onnxEnv as any).wasm.numThreads = 1;
+      console.log("[Segmentation] Set ONNX WASM numThreads = 1");
+      
+      // CRITICAL FIX: Use NON-JSEP WASM files
+      // The default .jsep variants require SharedArrayBuffer and cause crashes without it
+      // Using the non-jsep variants from CDN works in all environments
+      // See: https://github.com/huggingface/transformers.js/issues/1242
+      const onnxVersion = "1.21.0";
+      const newWasmPaths = {
+        mjs: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnxVersion}/dist/ort-wasm-simd-threaded.mjs`,
+        wasm: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnxVersion}/dist/ort-wasm-simd-threaded.wasm`,
+      };
+      (onnxEnv as any).wasm.wasmPaths = newWasmPaths;
+      console.log(`[Segmentation] Set ONNX WASM paths to non-JSEP variants (onnxruntime-web@${onnxVersion})`);
+      console.log("[Segmentation] New wasmPaths:", JSON.stringify(newWasmPaths));
+      
+      onnxConfigured = true;
+    } else {
+      console.warn("[Segmentation] ONNX wasm config not found yet, creating it");
+      // Setup a fallback structure if the backend hasn't initialized yet
+      if (!env.backends) {
+        (env as any).backends = {};
+      }
+      if (!env.backends.onnx) {
+        (env.backends as any).onnx = {};
+      }
+      if (!(env.backends.onnx as any).wasm) {
+        (env.backends.onnx as any).wasm = {};
+      }
+      
+      const onnxVersion = "1.21.0";
+      (env.backends.onnx as any).wasm.numThreads = 1;
+      (env.backends.onnx as any).wasm.wasmPaths = {
+        mjs: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnxVersion}/dist/ort-wasm-simd-threaded.mjs`,
+        wasm: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${onnxVersion}/dist/ort-wasm-simd-threaded.wasm`,
+      };
+      console.log("[Segmentation] Created ONNX wasm config structure with non-JSEP WASM paths");
+      onnxConfigured = true;
+    }
+  } else {
+    console.log("[Segmentation] Secure context with SharedArrayBuffer - using default ONNX config");
+    onnxConfigured = true;
+  }
+}
+
+// Don't configure at module load - the ONNX backend isn't initialized yet
+// Configuration will be done right before pipeline() is called
 
 // Type for the segmentation pipeline - using image-segmentation for RMBG (desktop)
 type SegmentationPipeline = Awaited<
@@ -15,7 +176,7 @@ type BackgroundRemovalPipeline = Awaited<
   ReturnType<typeof pipeline<"background-removal">>
 >;
 
-// Type for semantic segmentation pipeline - using DeepLabV3 MobileViT for true wall detection
+// Type for semantic segmentation pipeline - using SegFormer for true wall detection
 type SemanticSegmentationPipeline = Awaited<
   ReturnType<typeof pipeline<"image-segmentation">>
 >;
@@ -38,16 +199,6 @@ let semanticPipeline: SemanticSegmentationPipeline | null = null;
 let isSemanticLoading = false;
 let semanticLoadingPromise: Promise<SemanticSegmentationPipeline> | null = null;
 let semanticLoadAttempts = 0;
-
-/**
- * Detect if we're running on a mobile/Android device
- * These devices often have limited WASM memory and need smaller image sizes
- */
-function isMobileDevice(): boolean {
-  if (typeof navigator === 'undefined') return false;
-  const ua = navigator.userAgent || '';
-  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
-}
 
 /**
  * Detect if we're running on Android specifically
@@ -97,21 +248,33 @@ function shouldSkipMLModels(): boolean {
 // Model configuration
 // Desktop: RMBG-1.4 with image-segmentation pipeline (high quality, ~176MB)
 // Mobile: MODNet with background-removal pipeline (light weight, ~6.6MB)
-// Semantic: DeepLabV3 MobileViT for true wall detection (~5MB)
+// Semantic: SegFormer for true wall detection (ADE20K trained, well-tested with transformers.js)
+//   - Desktop: b2 variant (~50MB, better quality)
+//   - Mobile: b0 variant (~14MB, lighter weight, works on Android)
 const SEGMENTATION_MODEL = "briaai/RMBG-1.4";
 const MOBILE_MODEL = "Xenova/modnet";
-const SEMANTIC_MODEL = "Xenova/deeplabv3-mobilevit-x-small";
+const SEMANTIC_MODEL_DESKTOP = "Xenova/segformer-b2-finetuned-ade-512-512";
+const SEMANTIC_MODEL_MOBILE = "Xenova/segformer-b0-finetuned-ade-512-512";
+
+// Get the appropriate semantic model based on device
+function getSemanticModel(): string {
+  const mobile = isMobileDevice();
+  const model = mobile ? SEMANTIC_MODEL_MOBILE : SEMANTIC_MODEL_DESKTOP;
+  console.log(`[Segmentation] Using semantic model: ${model} (mobile: ${mobile})`);
+  return model;
+}
 
 // ADE20K class indices for wall-related categories
 // The model outputs labels like "wall", "building", etc. which we match against
+// NOTE: Only include TRUE wall classes - avoid cabinet, door, etc. which may catch furniture
 const WALL_LABELS = [
   "wall",
+];
+
+// Secondary labels that might be walls in some contexts
+const SECONDARY_WALL_LABELS = [
   "building",
   "fence",
-  "cabinet",
-  "door",
-  "column",
-  "windowpane",
 ];
 
 // Primary wall label - what we're most interested in
@@ -424,8 +587,8 @@ function detectRectanglesInMask(
     const areaRatio = pixelCount / (width * height);
     if (areaRatio < minAreaRatio) continue;
 
-    // Consider it rectangular if fill ratio is high enough (>70%)
-    if (fillRatio > 0.7) {
+    // Consider it rectangular if fill ratio is high enough (>75%)
+    if (fillRatio > 0.75) {
       const normMinX = component.minX / width;
       const normMinY = component.minY / height;
       const normMaxX = component.maxX / width;
@@ -469,11 +632,11 @@ function detectRectanglesInMask(
 
 /**
  * Resize an image to fit within max dimensions while maintaining aspect ratio
- * Returns a data URL of the resized image
+ * Returns a data URL of the resized image along with original and new dimensions
  */
 async function resizeImageForSegmentation(
   imageUrl: string
-): Promise<{ dataUrl: string; scale: number }> {
+): Promise<{ dataUrl: string; scale: number; originalWidth: number; originalHeight: number; newWidth: number; newHeight: number }> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "anonymous";
@@ -505,6 +668,10 @@ async function resizeImageForSegmentation(
       resolve({
         dataUrl: canvas.toDataURL("image/jpeg", 0.9),
         scale,
+        originalWidth: width,
+        originalHeight: height,
+        newWidth,
+        newHeight,
       });
     };
 
@@ -676,6 +843,9 @@ async function initMobilePipeline(
     try {
       onProgress?.(0, "Loading MODNet model...");
 
+      // Configure ONNX for mobile BEFORE loading the model
+      configureOnnxForMobile();
+
       console.log(
         `[Segmentation] Calling pipeline() for background-removal with ${MOBILE_MODEL}...`
       );
@@ -725,19 +895,19 @@ async function initSemanticPipeline(
 ): Promise<SemanticSegmentationPipeline> {
   // Return cached pipeline if available
   if (semanticPipeline) {
-    console.log("[Segmentation] Using cached DeepLabV3 pipeline");
+    console.log("[Segmentation] Using cached SegFormer pipeline");
     return semanticPipeline;
   }
 
   // Return in-progress loading promise if available
   if (isSemanticLoading && semanticLoadingPromise) {
-    console.log("[Segmentation] Waiting for in-progress DeepLabV3 load");
+    console.log("[Segmentation] Waiting for in-progress SegFormer load");
     return semanticLoadingPromise;
   }
 
   // Check if we've exceeded max attempts
   if (semanticLoadAttempts >= MAX_LOAD_ATTEMPTS) {
-    console.error("[Segmentation] Max DeepLabV3 load attempts exceeded");
+    console.error("[Segmentation] Max SegFormer load attempts exceeded");
     throw new Error(
       "Failed to load semantic segmentation model after multiple attempts"
     );
@@ -746,26 +916,42 @@ async function initSemanticPipeline(
   isSemanticLoading = true;
   semanticLoadAttempts++;
 
+  // Get the appropriate model for this device
+  const modelToUse = getSemanticModel();
+
   console.log(
-    `[Segmentation] Loading DeepLabV3 MobileViT model (attempt ${semanticLoadAttempts}/${MAX_LOAD_ATTEMPTS})...`
+    `[Segmentation] Loading SegFormer ADE20K model (attempt ${semanticLoadAttempts}/${MAX_LOAD_ATTEMPTS})...`
   );
+  console.log(`[Segmentation] Model: ${modelToUse}`);
 
   semanticLoadingPromise = (async () => {
     try {
-      onProgress?.(0, "Loading DeepLabV3 wall detection model...");
+      onProgress?.(0, `Loading wall detection model (${isMobileDevice() ? 'mobile' : 'desktop'})...`);
+
+      // Configure ONNX for mobile BEFORE loading the model
+      // This must be done here (not at module load) because env.backends.onnx
+      // is only populated after the onnx backend module is imported
+      configureOnnxForMobile();
+      
+      // Log the final ONNX configuration for debugging
+      if (isMobileDevice()) {
+        console.log("[Segmentation] Final ONNX configuration:");
+        console.log("[Segmentation] - numThreads:", (env.backends?.onnx as any)?.wasm?.numThreads);
+        console.log("[Segmentation] - wasmPaths:", JSON.stringify((env.backends?.onnx as any)?.wasm?.wasmPaths));
+      }
 
       console.log(
-        `[Segmentation] Calling pipeline() for image-segmentation with ${SEMANTIC_MODEL}...`
+        `[Segmentation] Calling pipeline() for image-segmentation with ${modelToUse}...`
       );
 
-      // Use image-segmentation pipeline for DeepLabV3
-      const pipe = await pipeline("image-segmentation", SEMANTIC_MODEL, {
+      // Use image-segmentation pipeline for SegFormer
+      const pipe = await pipeline("image-segmentation", modelToUse, {
         progress_callback: (data: {
           progress?: number;
           status?: string;
           file?: string;
         }) => {
-          console.log("[Segmentation] DeepLabV3 Progress:", data);
+          console.log("[Segmentation] SegFormer Progress:", data);
           if (data.progress !== undefined) {
             onProgress?.(
               data.progress,
@@ -775,12 +961,17 @@ async function initSemanticPipeline(
         },
       });
 
-      console.log("[Segmentation] DeepLabV3 Pipeline created successfully!");
+      console.log("[Segmentation] SegFormer Pipeline created successfully!");
       semanticPipeline = pipe;
       onProgress?.(100, "Wall detection model loaded!");
       return semanticPipeline;
     } catch (error) {
-      console.error("[Segmentation] Failed to load DeepLabV3 model:", error);
+      console.error("[Segmentation] Failed to load SegFormer model:", error);
+      console.error("[Segmentation] Error details:", {
+        name: (error as Error)?.name,
+        message: (error as Error)?.message,
+        stack: (error as Error)?.stack?.substring(0, 500),
+      });
       // Reset state so we can try again
       semanticPipeline = null;
       semanticLoadingPromise = null;
@@ -804,6 +995,7 @@ export async function segmentWalls(
   // Check if we should skip ML models entirely (very old devices or previous memory errors)
   if (shouldSkipMLModels() || hasMemoryError) {
     console.log("[Segmentation] Skipping ML models, using simple color-based detection");
+    console.log("[Segmentation] Reason:", shouldSkipMLModels() ? "shouldSkipMLModels=true" : "hasMemoryError=true");
     onProgress?.(10, "Using lightweight wall detection...");
     try {
       return await simpleWallDetection(imageUrl, onProgress);
@@ -825,20 +1017,30 @@ export async function segmentWalls(
   }
 
   // Route to the appropriate pipeline based on device and settings
-  // Use ONLY semantic segmentation (DeepLabV3) for true wall detection
-  console.log("[Segmentation] Using SEMANTIC path (DeepLabV3 MobileViT)");
+  // Use ONLY semantic segmentation (SegFormer) for true wall detection
+  const modelToUse = getSemanticModel();
+  console.log(`[Segmentation] Using SEMANTIC path with model: ${modelToUse}`);
   try {
     return await segmentWallsSemantic(imageUrl, onProgress);
   } catch (error) {
-    console.error("[Segmentation] Semantic segmentation failed, using simple detection:", error);
+    console.error("[Segmentation] Semantic segmentation failed:", error);
+    console.error("[Segmentation] Error type:", (error as Error)?.name);
+    console.error("[Segmentation] Error message:", (error as Error)?.message);
+    
+    // Check if it's a memory error
     hasMemoryError = isMemoryError(error);
+    if (hasMemoryError) {
+      console.log("[Segmentation] Memory error detected, will skip ML models on next run");
+    }
+    
     // Fall back to simple color-based detection (no RMBG/MODNet)
+    console.log("[Segmentation] Falling back to simple color-based detection");
     return await simpleWallDetection(imageUrl, onProgress);
   }
 }
 
 /**
- * SEMANTIC segmentation using DeepLabV3 MobileViT (ADE20K labels).
+ * SEMANTIC segmentation using SegFormer (ADE20K labels).
  * This directly detects walls by semantic class, not by background removal.
  * Much more accurate for wall detection as it understands "wall" as a concept.
  */
@@ -847,30 +1049,32 @@ async function segmentWallsSemantic(
   onProgress?: (progress: number, status: string) => void
 ): Promise<WallSegmentationResult> {
   try {
-    // Step 1: Resize image for processing
+    // Step 1: Resize image for processing and get original dimensions
     console.log("[Segmentation Semantic] Step 1: Resizing image...");
     onProgress?.(10, "Preparing image...");
-    const { dataUrl: resizedImageUrl } =
+    const { dataUrl: resizedImageUrl, originalWidth, originalHeight, newWidth, newHeight } =
       await resizeImageForSegmentation(imageUrl);
 
-    // Step 2: Initialize the DeepLabV3 pipeline
-    console.log("[Segmentation Semantic] Step 2: Getting DeepLabV3 pipeline...");
+    console.log(`[Segmentation Semantic] Original: ${originalWidth}x${originalHeight}, Resized: ${newWidth}x${newHeight}`);
+
+    // Step 2: Initialize the SegFormer pipeline
+    console.log("[Segmentation Semantic] Step 2: Getting SegFormer pipeline...");
     const pipe = await initSemanticPipeline(onProgress);
     console.log("[Segmentation Semantic] Pipeline ready");
 
     onProgress?.(50, "Detecting walls...");
 
     // Step 3: Run semantic segmentation
-    console.log("[Segmentation Semantic] Step 3: Running DeepLabV3...");
+    console.log("[Segmentation Semantic] Step 3: Running SegFormer...");
     const results = await pipe(resizedImageUrl);
-    console.log("[Segmentation Semantic] DeepLabV3 result received");
+    console.log("[Segmentation Semantic] SegFormer result received");;
 
-    // DeepLabV3 returns an array of {label, mask, score} for each detected class
+    // SegFormer returns an array of {label, mask, score} for each detected class
     const segments = Array.isArray(results) ? results : [results];
 
     console.log(`[Segmentation Semantic] Found ${segments.length} segments`);
     segments.forEach((seg: any, i: number) => {
-      console.log(`  [${i}] label="${seg.label}" score=${seg.score?.toFixed(3)}`);
+      console.log(`  [${i}] label="${seg.label}" score=${seg.score !== null ? seg.score?.toFixed(3) : 'N/A'}`);
     });
 
     if (segments.length === 0) {
@@ -880,22 +1084,37 @@ async function segmentWallsSemantic(
     }
 
     // Step 4: Find wall-related segments and merge their masks
-    const wallSegments = segments.filter((seg: any) => {
+    // First try primary wall labels only
+    let wallSegments = segments.filter((seg: any) => {
       const label = (seg.label || "").toLowerCase();
       return WALL_LABELS.some(wl => label.includes(wl));
     });
 
-    console.log(`[Segmentation Semantic] Found ${wallSegments.length} wall-related segments`);
+    console.log(`[Segmentation Semantic] Found ${wallSegments.length} primary wall segments`);
 
+    // Log all detected segments for debugging
+    console.log("[Segmentation Semantic] All detected labels:",
+      segments.map((s: any) => `"${s.label}"`).join(", ")
+    );
+
+    // If no primary wall found, try secondary labels
     if (wallSegments.length === 0) {
-      console.log("[Segmentation Semantic] No wall segments found, using largest segment");
-      // Fall back to using the largest segment as "wall"
-      const sortedByScore = [...segments].sort((a: any, b: any) =>
-        (b.score || 0) - (a.score || 0)
+      console.log("[Segmentation Semantic] No primary wall, trying secondary labels...");
+      wallSegments = segments.filter((seg: any) => {
+        const label = (seg.label || "").toLowerCase();
+        return SECONDARY_WALL_LABELS.some(wl => label.includes(wl));
+      });
+      console.log(`[Segmentation Semantic] Found ${wallSegments.length} secondary wall segments`);
+    }
+
+    // If still no wall segments, DON'T fall back to largest segment
+    // This prevents furniture from being treated as wall
+    if (wallSegments.length === 0) {
+      console.log("[Segmentation Semantic] No wall segments found - returning empty result");
+      console.log("[Segmentation Semantic] Available labels were:",
+        segments.map((s: any) => s.label).join(", ")
       );
-      if (sortedByScore.length > 0 && sortedByScore[0].mask) {
-        wallSegments.push(sortedByScore[0]);
-      }
+      return createEmptyResult();
     }
 
     if (wallSegments.length === 0 || !wallSegments[0]?.mask) {
@@ -903,16 +1122,19 @@ async function segmentWallsSemantic(
       return createEmptyResult();
     }
 
-    // Get dimensions from first wall segment
+    // Get dimensions from first wall segment (model output size)
     const firstMask = wallSegments[0].mask as RawImage;
-    const width = firstMask.width;
-    const height = firstMask.height;
+    const maskWidth = firstMask.width;
+    const maskHeight = firstMask.height;
 
-    console.log(`[Segmentation Semantic] Mask dimensions: ${width}x${height}`);
+    console.log(`[Segmentation Semantic] Model mask dimensions: ${maskWidth}x${maskHeight}`);
+    console.log(`[Segmentation Semantic] Target output dimensions: ${newWidth}x${newHeight}`);
 
-    // Step 5: Merge all wall segment masks into one
+    // Step 5: Merge all wall segment masks and upscale to target dimensions
+    // We use newWidth/newHeight (the resized input size) as the target since that's what
+    // the Visualizer expects (it displays the image at newWidth x newHeight)
     onProgress?.(70, "Creating wall mask...");
-    return processSemanticMasks(wallSegments, width, height, onProgress);
+    return processSemanticMasksWithUpscale(wallSegments, maskWidth, maskHeight, newWidth, newHeight, onProgress);
   } catch (error) {
     console.error("[Segmentation Semantic] Error:", error);
     hasMemoryError = isMemoryError(error);
@@ -1067,14 +1289,230 @@ function createEmptyResult(): WallSegmentationResult {
 
 /**
  * Check if an error is a memory-related error
+ * These errors are common on mobile devices (especially Android) with limited WASM memory
  */
 function isMemoryError(error: any): boolean {
   const msg = String(error).toLowerCase();
-  return msg.includes('memory') || msg.includes('oom') || msg.includes('allocation');
+  return (
+    msg.includes('memory') || 
+    msg.includes('oom') || 
+    msg.includes('allocation') ||
+    msg.includes('array buffer') ||  // "Array buffer allocation failed"
+    msg.includes('buffer of size') || // "failed to allocate a buffer of size"
+    msg.includes('out of memory') ||
+    msg.includes('rangeerror') ||     // RangeError often indicates memory issues
+    msg.includes("can't create a session") // ONNX session creation failure
+  );
 }
 
 /**
- * Process semantic segmentation masks from DeepLabV3.
+ * Process semantic segmentation masks from SegFormer with upscaling.
+ * The model outputs masks at a fixed resolution (typically 512x512).
+ * This function upscales the mask to the target dimensions for better accuracy.
+ */
+function processSemanticMasksWithUpscale(
+  wallSegments: any[],
+  maskWidth: number,
+  maskHeight: number,
+  targetWidth: number,
+  targetHeight: number,
+  onProgress?: (progress: number, status: string) => void
+): WallSegmentationResult {
+  console.log(`[Segmentation Semantic] Processing ${wallSegments.length} wall segments with upscaling...`);
+  console.log(`[Segmentation Semantic] Mask: ${maskWidth}x${maskHeight} -> Target: ${targetWidth}x${targetHeight}`);
+
+  // Step 1: Create merged wall mask at model resolution
+  const smallMask = new Uint8Array(maskWidth * maskHeight);
+  
+  for (const segment of wallSegments) {
+    const mask = segment.mask as RawImage;
+    if (!mask || !mask.data) continue;
+
+    const maskData = mask.data as Uint8Array;
+    const channels = mask.channels || 1;
+
+    console.log(`[Segmentation Semantic] Processing segment "${segment.label}" (${channels} channels, ${mask.width}x${mask.height})`);
+
+    for (let y = 0; y < maskHeight; y++) {
+      for (let x = 0; x < maskWidth; x++) {
+        const pixelIdx = y * maskWidth + x;
+
+        // Read mask value - handle different channel counts
+        let maskValue: number;
+        if (channels === 1) {
+          maskValue = maskData[pixelIdx];
+        } else if (channels === 4) {
+          maskValue = maskData[pixelIdx * channels + 3];
+        } else {
+          maskValue = maskData[pixelIdx * channels];
+        }
+
+        // Using threshold 180 for stricter wall detection
+        if (maskValue > 180 && smallMask[pixelIdx] === 0) {
+          smallMask[pixelIdx] = 255;
+        }
+      }
+    }
+  }
+
+  // Step 2: Create canvas with small mask and upscale using bilinear interpolation
+  const smallCanvas = document.createElement("canvas");
+  smallCanvas.width = maskWidth;
+  smallCanvas.height = maskHeight;
+  const smallCtx = smallCanvas.getContext("2d")!;
+  const smallImageData = smallCtx.createImageData(maskWidth, maskHeight);
+
+  // Convert Uint8Array mask to ImageData (grayscale -> RGBA)
+  for (let i = 0; i < smallMask.length; i++) {
+    const val = smallMask[i];
+    smallImageData.data[i * 4] = val;
+    smallImageData.data[i * 4 + 1] = val;
+    smallImageData.data[i * 4 + 2] = val;
+    smallImageData.data[i * 4 + 3] = 255;
+  }
+  smallCtx.putImageData(smallImageData, 0, 0);
+
+  // Step 3: Upscale to target dimensions using canvas drawImage (bilinear interpolation)
+  const largeCanvas = document.createElement("canvas");
+  largeCanvas.width = targetWidth;
+  largeCanvas.height = targetHeight;
+  const largeCtx = largeCanvas.getContext("2d")!;
+  
+  // Use imageSmoothingEnabled for better upscaling quality
+  largeCtx.imageSmoothingEnabled = true;
+  largeCtx.imageSmoothingQuality = "high";
+  largeCtx.drawImage(smallCanvas, 0, 0, targetWidth, targetHeight);
+
+  // Step 4: Extract upscaled mask data
+  const largeImageData = largeCtx.getImageData(0, 0, targetWidth, targetHeight);
+  const wallMask = new Uint8Array(targetWidth * targetHeight);
+  
+  let minX = targetWidth, minY = targetHeight, maxX = 0, maxY = 0;
+  let sumX = 0, sumY = 0, wallPixelCount = 0;
+
+  // Convert back to binary mask (threshold at 128 after upscaling)
+  for (let y = 0; y < targetHeight; y++) {
+    for (let x = 0; x < targetWidth; x++) {
+      const pixelIdx = y * targetWidth + x;
+      const val = largeImageData.data[pixelIdx * 4]; // Red channel (grayscale)
+      
+      // Use threshold after upscaling to clean up edges
+      if (val > 128) {
+        wallMask[pixelIdx] = 255;
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+        sumX += x;
+        sumY += y;
+        wallPixelCount++;
+      }
+    }
+  }
+
+  console.log(`[Segmentation Semantic] Wall pixels after upscaling: ${wallPixelCount} / ${targetWidth * targetHeight}`);
+
+  // Create wall planes
+  const wallPlanes: WallPlane[] = [];
+  if (wallPixelCount > 0) {
+    const centerX = sumX / wallPixelCount / targetWidth;
+    const centerY = sumY / wallPixelCount / targetHeight;
+    wallPlanes.push({
+      label: "wall",
+      centerX,
+      centerY,
+      normalX: (0.5 - centerX) * 2,
+      normalY: (0.5 - centerY) * 0.3,
+      area: wallPixelCount / (targetWidth * targetHeight),
+      boundingBox: {
+        xmin: minX / targetWidth,
+        ymin: minY / targetHeight,
+        xmax: maxX / targetWidth,
+        ymax: maxY / targetHeight,
+      },
+    });
+  }
+
+  // Create visualization canvases at target resolution
+  onProgress?.(80, "Creating visualizations...");
+  
+  // Visualization (red tint)
+  const vizCanvas = document.createElement("canvas");
+  vizCanvas.width = targetWidth;
+  vizCanvas.height = targetHeight;
+  const vizCtx = vizCanvas.getContext("2d")!;
+  const vizImageData = vizCtx.createImageData(targetWidth, targetHeight);
+
+  for (let i = 0; i < wallMask.length; i++) {
+    const val = wallMask[i];
+    vizImageData.data[i * 4] = val;
+    vizImageData.data[i * 4 + 1] = val > 0 ? 128 : 0;
+    vizImageData.data[i * 4 + 2] = 0;
+    vizImageData.data[i * 4 + 3] = val > 0 ? 180 : 0;
+  }
+  vizCtx.putImageData(vizImageData, 0, 0);
+
+  // CSS mask
+  const cssMaskCanvas = document.createElement("canvas");
+  cssMaskCanvas.width = targetWidth;
+  cssMaskCanvas.height = targetHeight;
+  const cssMaskCtx = cssMaskCanvas.getContext("2d")!;
+  const cssMaskImageData = cssMaskCtx.createImageData(targetWidth, targetHeight);
+
+  for (let i = 0; i < wallMask.length; i++) {
+    const isWall = wallMask[i] > 0;
+    cssMaskImageData.data[i * 4] = 255;
+    cssMaskImageData.data[i * 4 + 1] = 255;
+    cssMaskImageData.data[i * 4 + 2] = 255;
+    cssMaskImageData.data[i * 4 + 3] = isWall ? 255 : 0;
+  }
+  cssMaskCtx.putImageData(cssMaskImageData, 0, 0);
+
+  // Foreground mask (inverted)
+  const fgMaskCanvas = document.createElement("canvas");
+  fgMaskCanvas.width = targetWidth;
+  fgMaskCanvas.height = targetHeight;
+  const fgMaskCtx = fgMaskCanvas.getContext("2d")!;
+  const fgMaskImageData = fgMaskCtx.createImageData(targetWidth, targetHeight);
+
+  for (let i = 0; i < wallMask.length; i++) {
+    const isWall = wallMask[i] > 0;
+    fgMaskImageData.data[i * 4] = 255;
+    fgMaskImageData.data[i * 4 + 1] = 255;
+    fgMaskImageData.data[i * 4 + 2] = 255;
+    fgMaskImageData.data[i * 4 + 3] = isWall ? 0 : 255;
+  }
+  fgMaskCtx.putImageData(fgMaskImageData, 0, 0);
+
+  // Detect rectangles
+  const detectedRectangles = detectRectanglesInMask(wallMask, targetWidth, targetHeight);
+
+  onProgress?.(100, "Wall detection complete!");
+  console.log(
+    `[Segmentation Semantic] Complete! Wall area: ${((wallPixelCount / (targetWidth * targetHeight)) * 100).toFixed(1)}%, Rectangles: ${detectedRectangles.length}`
+  );
+
+  return {
+    wallMask,
+    wallBoundingBox: wallPixelCount > 0 ? {
+      xmin: minX / targetWidth,
+      ymin: minY / targetHeight,
+      xmax: maxX / targetWidth,
+      ymax: maxY / targetHeight,
+    } : null,
+    wallArea: wallPixelCount / (targetWidth * targetHeight),
+    width: targetWidth,
+    height: targetHeight,
+    wallMaskUrl: vizCanvas.toDataURL("image/png"),
+    cssMaskUrl: cssMaskCanvas.toDataURL("image/png"),
+    foregroundMaskUrl: fgMaskCanvas.toDataURL("image/png"),
+    wallPlanes,
+    detectedRectangles,
+  };
+}
+
+/**
+ * Process semantic segmentation masks from SegFormer.
  * Merges multiple wall-related segment masks into a single wall mask.
  */
 function processSemanticMasks(
@@ -1116,8 +1554,9 @@ function processSemanticMasks(
           maskValue = maskData[pixelIdx * channels];
         }
 
-        // If this pixel is part of the segment (non-zero mask value)
-        if (maskValue > 128 && wallMask[pixelIdx] === 0) {
+        // If this pixel is part of the segment (high confidence wall pixel)
+        // Using higher threshold (180) for stricter wall detection
+        if (maskValue > 180 && wallMask[pixelIdx] === 0) {
           wallMask[pixelIdx] = 255;
           minX = Math.min(minX, x);
           minY = Math.min(minY, y);

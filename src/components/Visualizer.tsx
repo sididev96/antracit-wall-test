@@ -434,16 +434,21 @@ export function Visualizer() {
     const container = containerRef.current;
     const rect = container.getBoundingClientRect();
 
+    // Calculate panel dimensions locally to avoid dependency on values that change in this effect
+    const localDepthScale = Math.max(0.6, Math.min(1.4, 0.6 + depthAtPanel * 0.8));
+    const localScaledPanelHeight = basePanelSize.height * panelTransform.scale * localDepthScale;
+    const localScaledPanelWidth = localScaledPanelHeight * aspectRatio;
+
     // Calculate center of panel
-    const centerX = panelTransform.x + scaledPanelWidth / 2;
-    const centerY = panelTransform.y + scaledPanelHeight / 2;
+    const centerX = panelTransform.x + localScaledPanelWidth / 2;
+    const centerY = panelTransform.y + localScaledPanelHeight / 2;
 
     // Get wall-aware perspective using panel dimensions for depth gradient sampling
     const perspective = calculateWallAwarePerspective(
       centerX,
       centerY,
-      scaledPanelWidth,
-      scaledPanelHeight
+      localScaledPanelWidth,
+      localScaledPanelHeight
     );
 
     // Only update rotation if change is significant (threshold: 2 degrees)
@@ -474,16 +479,25 @@ export function Visualizer() {
       normalizedX,
       normalizedY
     );
-    setDepthAtPanel(depth);
+    
+    // Only update depth if change is significant (threshold: 0.05) to prevent infinite loops
+    const DEPTH_THRESHOLD = 0.05;
+    setDepthAtPanel((prev) => {
+      if (Math.abs(depth - prev) >= DEPTH_THRESHOLD) {
+        return depth;
+      }
+      return prev;
+    });
   }, [
     panelTransform.x,
     panelTransform.y,
     panelTransform.scale,
-    scaledPanelWidth,
-    scaledPanelHeight,
     depthMap,
     step,
     calculateWallAwarePerspective,
+    basePanelSize.height,
+    aspectRatio,
+    depthAtPanel,
   ]);
 
   // Drag handlers
@@ -520,7 +534,7 @@ export function Visualizer() {
         const normalizedX = panelCenterX / rect.width;
         const normalizedY = panelCenterY / rect.height;
 
-        // Only allow move if center would be on wall
+        // Check if the new position is on a wall
         const wouldBeOnWall = isPointOnWall(
           wallSegmentation.wallMask,
           wallSegmentation.width,
@@ -529,8 +543,25 @@ export function Visualizer() {
           normalizedY
         );
 
-        if (!wouldBeOnWall) {
-          // Don't update position - keep panel in current valid position
+        // Check current position
+        const currentCenterX = panelTransform.x + scaledPanelWidth / 2;
+        const currentCenterY = panelTransform.y + scaledPanelHeight / 2;
+        const currentNormalizedX = currentCenterX / rect.width;
+        const currentNormalizedY = currentCenterY / rect.height;
+        const currentlyOnWall = isPointOnWall(
+          wallSegmentation.wallMask,
+          wallSegmentation.width,
+          wallSegmentation.height,
+          currentNormalizedX,
+          currentNormalizedY
+        );
+
+        // Allow movement if:
+        // 1. Moving TO a wall position (always allowed)
+        // 2. Currently NOT on wall (allow escape from stuck positions)
+        // Block only if: currently on wall AND trying to move to non-wall
+        if (!wouldBeOnWall && currentlyOnWall) {
+          // Block movement from wall to non-wall
           return;
         }
       }
@@ -541,7 +572,7 @@ export function Visualizer() {
         y: newY,
       }));
     },
-    [isDragging, dragStart, wallSegmentation, scaledPanelWidth, scaledPanelHeight]
+    [isDragging, dragStart, wallSegmentation, scaledPanelWidth, scaledPanelHeight, panelTransform.x, panelTransform.y]
   );
 
   const handleMouseUp = useCallback(() => {
@@ -584,7 +615,7 @@ export function Visualizer() {
         const normalizedX = panelCenterX / rect.width;
         const normalizedY = panelCenterY / rect.height;
 
-        // Only allow move if center would be on wall
+        // Check if the new position is on a wall
         const wouldBeOnWall = isPointOnWall(
           wallSegmentation.wallMask,
           wallSegmentation.width,
@@ -593,8 +624,25 @@ export function Visualizer() {
           normalizedY
         );
 
-        if (!wouldBeOnWall) {
-          // Don't update position - keep panel in current valid position
+        // Check current position
+        const currentCenterX = panelTransform.x + scaledPanelWidth / 2;
+        const currentCenterY = panelTransform.y + scaledPanelHeight / 2;
+        const currentNormalizedX = currentCenterX / rect.width;
+        const currentNormalizedY = currentCenterY / rect.height;
+        const currentlyOnWall = isPointOnWall(
+          wallSegmentation.wallMask,
+          wallSegmentation.width,
+          wallSegmentation.height,
+          currentNormalizedX,
+          currentNormalizedY
+        );
+
+        // Allow movement if:
+        // 1. Moving TO a wall position (always allowed)
+        // 2. Currently NOT on wall (allow escape from stuck positions)
+        // Block only if: currently on wall AND trying to move to non-wall
+        if (!wouldBeOnWall && currentlyOnWall) {
+          // Block movement from wall to non-wall
           return;
         }
       }
@@ -605,7 +653,7 @@ export function Visualizer() {
         y: newY,
       }));
     },
-    [isDragging, dragStart, wallSegmentation, scaledPanelWidth, scaledPanelHeight]
+    [isDragging, dragStart, wallSegmentation, scaledPanelWidth, scaledPanelHeight, panelTransform.x, panelTransform.y]
   );
 
   const handleTouchEnd = useCallback(() => {
@@ -716,11 +764,11 @@ export function Visualizer() {
 
       if (panelAspectRatio > wallAspectRatio) {
         // Panel is wider than wall - fit by width
-        targetWidth = wallWidthPx * 0.95; // 95% to leave small margin
+        targetWidth = wallWidthPx; // Fill wall width completely
         targetHeight = targetWidth / panelAspectRatio;
       } else {
         // Panel is taller than wall - fit by height
-        targetHeight = wallHeightPx * 0.95; // 95% to leave small margin
+        targetHeight = wallHeightPx; // Fill wall height completely
         targetWidth = targetHeight * panelAspectRatio;
       }
 
@@ -848,11 +896,11 @@ export function Visualizer() {
 
     if (panelAspectRatio > wallAspectRatio) {
       // Panel is wider than wall - fit by width
-      targetWidth = wallWidthPx * 0.95;
+      targetWidth = wallWidthPx; // Fill wall width completely
       targetHeight = targetWidth / panelAspectRatio;
     } else {
       // Panel is taller than wall - fit by height
-      targetHeight = wallHeightPx * 0.95;
+      targetHeight = wallHeightPx; // Fill wall height completely
       targetWidth = targetHeight * panelAspectRatio;
     }
 
@@ -929,6 +977,38 @@ export function Visualizer() {
     getBasePanelSize,
   ]);
 
+  // Helper function to find nearest wall point from any position (normalized coords)
+  const findNearestWallPoint = useCallback(
+    (normalizedX: number, normalizedY: number, searchRadius: number = 0.3): { x: number; y: number } | null => {
+      if (!wallSegmentation || wallSegmentation.wallMask.length === 0) {
+        return null;
+      }
+
+      const { wallMask, width, height } = wallSegmentation;
+
+      // First check if already on wall
+      if (isPointOnWall(wallMask, width, height, normalizedX, normalizedY)) {
+        return { x: normalizedX, y: normalizedY };
+      }
+
+      // Search in a spiral pattern from the starting point
+      const steps = 20;
+      for (let radius = 0.02; radius <= searchRadius; radius += 0.02) {
+        for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / steps) {
+          const testX = Math.max(0, Math.min(1, normalizedX + Math.cos(angle) * radius));
+          const testY = Math.max(0, Math.min(1, normalizedY + Math.sin(angle) * radius));
+
+          if (isPointOnWall(wallMask, width, height, testX, testY)) {
+            return { x: testX, y: testY };
+          }
+        }
+      }
+
+      return null;
+    },
+    [wallSegmentation]
+  );
+
   const handleSelectPanel = useCallback(
     (panel: WallPanel) => {
       setSelectedPanel(panel);
@@ -948,9 +1028,34 @@ export function Visualizer() {
           wallSegmentation.wallPlanes[0]
         );
 
-        // Position panel at the center of the largest wall
-        const centerX = largestWall.centerX * rect.width;
-        const centerY = largestWall.centerY * rect.height;
+        // Get initial position at the center of the largest wall
+        let normalizedCenterX = largestWall.centerX;
+        let normalizedCenterY = largestWall.centerY;
+
+        // Validate that this position is actually on the wall mask
+        // If not, find the nearest valid wall point
+        if (wallSegmentation.wallMask.length > 0) {
+          const isOnWall = isPointOnWall(
+            wallSegmentation.wallMask,
+            wallSegmentation.width,
+            wallSegmentation.height,
+            normalizedCenterX,
+            normalizedCenterY
+          );
+
+          if (!isOnWall) {
+            // Find nearest wall point within the wall plane's bounding box
+            const nearestPoint = findNearestWallPoint(normalizedCenterX, normalizedCenterY, 0.5);
+            if (nearestPoint) {
+              normalizedCenterX = nearestPoint.x;
+              normalizedCenterY = nearestPoint.y;
+            }
+          }
+        }
+
+        // Position panel at the validated center
+        const centerX = normalizedCenterX * rect.width;
+        const centerY = normalizedCenterY * rect.height;
 
         // Offset by half panel size to center it
         const panelWidth = 150; // Base panel width
@@ -973,8 +1078,30 @@ export function Visualizer() {
         const rect = container.getBoundingClientRect();
         const box = wallSegmentation.wallBoundingBox;
 
-        const centerX = ((box.xmin + box.xmax) / 2) * rect.width;
-        const centerY = ((box.ymin + box.ymax) / 2) * rect.height;
+        let normalizedCenterX = (box.xmin + box.xmax) / 2;
+        let normalizedCenterY = (box.ymin + box.ymax) / 2;
+
+        // Validate position on wall mask
+        if (wallSegmentation.wallMask.length > 0) {
+          const isOnWall = isPointOnWall(
+            wallSegmentation.wallMask,
+            wallSegmentation.width,
+            wallSegmentation.height,
+            normalizedCenterX,
+            normalizedCenterY
+          );
+
+          if (!isOnWall) {
+            const nearestPoint = findNearestWallPoint(normalizedCenterX, normalizedCenterY, 0.5);
+            if (nearestPoint) {
+              normalizedCenterX = nearestPoint.x;
+              normalizedCenterY = nearestPoint.y;
+            }
+          }
+        }
+
+        const centerX = normalizedCenterX * rect.width;
+        const centerY = normalizedCenterY * rect.height;
 
         setPanelTransform({
           x: centerX - 75,
@@ -991,7 +1118,7 @@ export function Visualizer() {
         );
       }
     },
-    [wallSegmentation]
+    [wallSegmentation, findNearestWallPoint]
   );
 
   const handleDownload = useCallback(async () => {
