@@ -825,24 +825,15 @@ export async function segmentWalls(
   }
 
   // Route to the appropriate pipeline based on device and settings
-  // Prefer semantic segmentation (DeepLabV3) for true wall detection
-  if (useSemanticSegmentation) {
-    console.log("[Segmentation] Using SEMANTIC path (DeepLabV3 MobileViT)");
-    try {
-      return await segmentWallsSemantic(imageUrl, onProgress);
-    } catch (error) {
-      console.error("[Segmentation] Semantic segmentation failed, falling back:", error);
-      // Fall back to device-specific pipeline
-      useSemanticSegmentation = false;
-    }
-  }
-
-  if (isMobileDevice()) {
-    console.log("[Segmentation] Using MOBILE path (MODNet)");
-    return segmentWallsMobile(imageUrl, onProgress);
-  } else {
-    console.log("[Segmentation] Using DESKTOP path (RMBG)");
-    return segmentWallsDesktop(imageUrl, onProgress);
+  // Use ONLY semantic segmentation (DeepLabV3) for true wall detection
+  console.log("[Segmentation] Using SEMANTIC path (DeepLabV3 MobileViT)");
+  try {
+    return await segmentWallsSemantic(imageUrl, onProgress);
+  } catch (error) {
+    console.error("[Segmentation] Semantic segmentation failed, using simple detection:", error);
+    hasMemoryError = isMemoryError(error);
+    // Fall back to simple color-based detection (no RMBG/MODNet)
+    return await simpleWallDetection(imageUrl, onProgress);
   }
 }
 

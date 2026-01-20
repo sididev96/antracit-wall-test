@@ -297,7 +297,7 @@ export function Visualizer() {
         for (const plane of wallSegmentation.wallPlanes) {
           const dist = Math.sqrt(
             (normalizedX - plane.centerX) ** 2 +
-              (normalizedY - plane.centerY) ** 2
+            (normalizedY - plane.centerY) ** 2
           );
           if (dist < minDist) {
             minDist = dist;
@@ -445,14 +445,14 @@ export function Visualizer() {
       scaledPanelWidth,
       scaledPanelHeight
     );
-    
+
     // Only update rotation if change is significant (threshold: 2 degrees)
     // This prevents micro-adjustments that cause wobbling
     const ROTATION_THRESHOLD = 2;
     setPanelRotation((prev) => {
       const rotateXDiff = Math.abs(perspective.rotateX - prev.rotateX);
       const rotateYDiff = Math.abs(perspective.rotateY - prev.rotateY);
-      
+
       // Only update if at least one axis has a significant change
       if (rotateXDiff >= ROTATION_THRESHOLD || rotateYDiff >= ROTATION_THRESHOLD) {
         return {
@@ -507,13 +507,41 @@ export function Visualizer() {
       const newX = e.clientX - dragStart.x;
       const newY = e.clientY - dragStart.y;
 
+      // Constrain panel to wall boundaries if wall segmentation is available
+      if (wallSegmentation && wallSegmentation.wallMask.length > 0 && containerRef.current) {
+        const container = containerRef.current;
+        const rect = container.getBoundingClientRect();
+
+        // Calculate where the panel center would be
+        const panelCenterX = newX + scaledPanelWidth / 2;
+        const panelCenterY = newY + scaledPanelHeight / 2;
+
+        // Normalize to 0-1 range
+        const normalizedX = panelCenterX / rect.width;
+        const normalizedY = panelCenterY / rect.height;
+
+        // Only allow move if center would be on wall
+        const wouldBeOnWall = isPointOnWall(
+          wallSegmentation.wallMask,
+          wallSegmentation.width,
+          wallSegmentation.height,
+          normalizedX,
+          normalizedY
+        );
+
+        if (!wouldBeOnWall) {
+          // Don't update position - keep panel in current valid position
+          return;
+        }
+      }
+
       setPanelTransform((prev) => ({
         ...prev,
         x: newX,
         y: newY,
       }));
     },
-    [isDragging, dragStart]
+    [isDragging, dragStart, wallSegmentation, scaledPanelWidth, scaledPanelHeight]
   );
 
   const handleMouseUp = useCallback(() => {
@@ -543,13 +571,41 @@ export function Visualizer() {
       const newX = touch.clientX - dragStart.x;
       const newY = touch.clientY - dragStart.y;
 
+      // Constrain panel to wall boundaries if wall segmentation is available
+      if (wallSegmentation && wallSegmentation.wallMask.length > 0 && containerRef.current) {
+        const container = containerRef.current;
+        const rect = container.getBoundingClientRect();
+
+        // Calculate where the panel center would be
+        const panelCenterX = newX + scaledPanelWidth / 2;
+        const panelCenterY = newY + scaledPanelHeight / 2;
+
+        // Normalize to 0-1 range
+        const normalizedX = panelCenterX / rect.width;
+        const normalizedY = panelCenterY / rect.height;
+
+        // Only allow move if center would be on wall
+        const wouldBeOnWall = isPointOnWall(
+          wallSegmentation.wallMask,
+          wallSegmentation.width,
+          wallSegmentation.height,
+          normalizedX,
+          normalizedY
+        );
+
+        if (!wouldBeOnWall) {
+          // Don't update position - keep panel in current valid position
+          return;
+        }
+      }
+
       setPanelTransform((prev) => ({
         ...prev,
         x: newX,
         y: newY,
       }));
     },
-    [isDragging, dragStart]
+    [isDragging, dragStart, wallSegmentation, scaledPanelWidth, scaledPanelHeight]
   );
 
   const handleTouchEnd = useCallback(() => {
@@ -585,7 +641,7 @@ export function Visualizer() {
       }
 
       const { wallMask, width, height } = wallSegmentation;
-      
+
       // First check if the geometric center is on the wall
       if (isPointOnWall(wallMask, width, height, rect.center.x, rect.center.y)) {
         return rect.center;
@@ -682,7 +738,7 @@ export function Visualizer() {
       const targetCenterY = targetY + targetHeight / 2;
       const normalizedX = Math.max(0, Math.min(1, targetCenterX / rect.width));
       const normalizedY = Math.max(0, Math.min(1, targetCenterY / rect.height));
-      
+
       let targetDepth = 0.5;
       let targetDepthScale = 1.0;
       if (depthMap) {
@@ -706,7 +762,7 @@ export function Visualizer() {
       // So: newScale = targetHeight / (basePanelSize.height * targetDepthScale)
       const baseSize = getBasePanelSize();
       const newScale = targetHeight / (baseSize.height * targetDepthScale);
-      
+
       console.log("[SnapToRect] Target dimensions:", targetWidth, "x", targetHeight);
       console.log("[SnapToRect] Base size:", baseSize);
       console.log("[SnapToRect] Target depth:", targetDepth, "scale:", targetDepthScale);
@@ -817,7 +873,7 @@ export function Visualizer() {
     const targetCenterY = targetY + targetHeight / 2;
     const normalizedX = Math.max(0, Math.min(1, targetCenterX / rect.width));
     const normalizedY = Math.max(0, Math.min(1, targetCenterY / rect.height));
-    
+
     let targetDepth = 0.5;
     let targetDepthScale = 1.0;
     if (depthMap) {
@@ -1306,7 +1362,7 @@ export function Visualizer() {
                   <div
                     ref={containerRef}
                     className="relative rounded-2xl overflow-hidden bg-muted shadow-medium select-none w-fit mx-auto"
-                    style={{ 
+                    style={{
                       perspective: "1200px",
                       // Prevent scroll interference on touch devices
                       touchAction: selectedPanel ? "none" : "auto",
@@ -1431,14 +1487,12 @@ export function Visualizer() {
                           className="absolute top-0 left-0 max-h-[75vh] w-auto max-w-full h-auto pointer-events-none"
                           draggable={false}
                           style={{
-                            WebkitMaskImage: `url(${
-                              enhancedForegroundMaskUrl ||
+                            WebkitMaskImage: `url(${enhancedForegroundMaskUrl ||
                               wallSegmentation?.foregroundMaskUrl
-                            })`,
-                            maskImage: `url(${
-                              enhancedForegroundMaskUrl ||
+                              })`,
+                            maskImage: `url(${enhancedForegroundMaskUrl ||
                               wallSegmentation?.foregroundMaskUrl
-                            })`,
+                              })`,
                             WebkitMaskSize: "100% 100%",
                             maskSize: "100% 100%",
                             WebkitMaskRepeat: "no-repeat",
