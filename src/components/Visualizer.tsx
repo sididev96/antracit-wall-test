@@ -13,6 +13,8 @@ import {
   ZoomIn,
   ZoomOut,
   Crosshair,
+  Split,
+  GripVertical,
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { cn } from "@/lib/utils";
@@ -85,6 +87,11 @@ export function Visualizer() {
   );
   const [depthAtPanel, setDepthAtPanel] = useState<number>(0.5);
   const [isOnWall, setIsOnWall] = useState<boolean>(false);
+
+  // Compare mode state
+  const [showCompareMode, setShowCompareMode] = useState(false);
+  const [comparePos, setComparePos] = useState(50);
+  const [isDraggingSlider, setIsDraggingSlider] = useState(false);
 
   // Just use the segmentation foreground mask directly - depth enhancement causes issues
   // The enhanced mask is disabled, we'll use wallSegmentation.foregroundMaskUrl directly
@@ -297,7 +304,7 @@ export function Visualizer() {
         for (const plane of wallSegmentation.wallPlanes) {
           const dist = Math.sqrt(
             (normalizedX - plane.centerX) ** 2 +
-              (normalizedY - plane.centerY) ** 2,
+            (normalizedY - plane.centerY) ** 2,
           );
           if (dist < minDist) {
             minDist = dist;
@@ -692,6 +699,62 @@ export function Visualizer() {
     setDragStart(null);
   }, []);
 
+  // Handle slider drag (mouse)
+  useEffect(() => {
+    const handleGlobalMove = (e: MouseEvent) => {
+      if (!isDraggingSlider || !containerRef.current) return;
+
+      const container = containerRef.current;
+      const rect = container.getBoundingClientRect();
+      const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+      const pos = (x / rect.width) * 100;
+      setComparePos(pos);
+    };
+
+    const handleGlobalUp = () => {
+      setIsDraggingSlider(false);
+    };
+
+    if (isDraggingSlider) {
+      window.addEventListener("mousemove", handleGlobalMove);
+      window.addEventListener("mouseup", handleGlobalUp);
+    }
+
+    return () => {
+      window.removeEventListener("mousemove", handleGlobalMove);
+      window.removeEventListener("mouseup", handleGlobalUp);
+    };
+  }, [isDraggingSlider]);
+
+  // Handle slider drag (touch)
+  useEffect(() => {
+    const handleGlobalTouchMove = (e: TouchEvent) => {
+      if (!isDraggingSlider || !containerRef.current) return;
+
+      const container = containerRef.current;
+      const rect = container.getBoundingClientRect();
+      // Handle touch coordinates
+      const touch = e.touches[0];
+      const x = Math.max(0, Math.min(rect.width, touch.clientX - rect.left));
+      const pos = (x / rect.width) * 100;
+      setComparePos(pos);
+    };
+
+    const handleGlobalTouchEnd = () => {
+      setIsDraggingSlider(false);
+    };
+
+    if (isDraggingSlider) {
+      window.addEventListener("touchmove", handleGlobalTouchMove, { passive: false });
+      window.addEventListener("touchend", handleGlobalTouchEnd);
+    }
+
+    return () => {
+      window.removeEventListener("touchmove", handleGlobalTouchMove);
+      window.removeEventListener("touchend", handleGlobalTouchEnd);
+    };
+  }, [isDraggingSlider]);
+
   // Scale handlers
   const handleScaleUp = useCallback(() => {
     setPanelTransform((prev) => ({
@@ -773,12 +836,16 @@ export function Visualizer() {
 
   // Snap panel to a specific detected rectangle by index
   const handleSnapToRectangle = useCallback(
-    (rectangleIndex: number) => {
+    (rectangleIndex: number, panelOverride?: WallPanel, dimensionsOverride?: PanelDimensions) => {
+      // Use overrides or state
+      const panel = panelOverride || selectedPanel;
+      const dims = dimensionsOverride || panelDimensions;
+
       if (
         !wallSegmentation ||
         !containerRef.current ||
-        !selectedPanel ||
-        !panelDimensions.loaded
+        !panel ||
+        !dims.loaded
       ) {
         return;
       }
@@ -788,12 +855,12 @@ export function Visualizer() {
         wallSegmentation.detectedRectangles?.length > 0
           ? wallSegmentation.detectedRectangles
           : wallSegmentation.wallPlanes?.map((plane) => ({
-              center: { x: plane.centerX, y: plane.centerY },
-              boundingBox: plane.boundingBox,
-              width: plane.boundingBox.xmax - plane.boundingBox.xmin,
-              height: plane.boundingBox.ymax - plane.boundingBox.ymin,
-              area: plane.area,
-            })) || [];
+            center: { x: plane.centerX, y: plane.centerY },
+            boundingBox: plane.boundingBox,
+            width: plane.boundingBox.xmax - plane.boundingBox.xmin,
+            height: plane.boundingBox.ymax - plane.boundingBox.ymin,
+            area: plane.area,
+          })) || [];
 
       if (!rectangles || rectangleIndex >= rectangles.length) {
         return;
@@ -804,7 +871,7 @@ export function Visualizer() {
       const targetRect = rectangles[rectangleIndex];
 
       // Calculate panel aspect ratio
-      const panelAspectRatio = panelDimensions.width / panelDimensions.height;
+      const panelAspectRatio = dims.width / dims.height;
       const wallAspectRatio = targetRect.width / targetRect.height;
 
       // Calculate wall dimensions in pixels
@@ -861,27 +928,50 @@ export function Visualizer() {
       // The rendered size is: basePanelSize.height * scale * depthScale
       // We want: targetHeight = basePanelSize.height * newScale * targetDepthScale
       // So: newScale = targetHeight / (basePanelSize.height * targetDepthScale)
-      const baseSize = getBasePanelSize();
-      const newScale = targetHeight / (baseSize.height * targetDepthScale);
 
-      console.log(
-        "[SnapToRect] Target dimensions:",
-        targetWidth,
-        "x",
-        targetHeight,
-      );
-      console.log("[SnapToRect] Base size:", baseSize);
-      console.log(
-        "[SnapToRect] Target depth:",
-        targetDepth,
-        "scale:",
-        targetDepthScale,
-      );
-      console.log("[SnapToRect] Calculated scale:", newScale);
-      console.log(
-        "[SnapToRect] Expected rendered height:",
-        baseSize.height * newScale * targetDepthScale,
-      );
+      // IMPORTANT: When using overrides (during initial selection), getBasePanelSize() 
+      // might return values based on OLD state (e.g. previous panel loaded state).
+      // We should calculate base size locally if specific dimensions are provided.
+      let baseSizeHeight = 250;
+
+      if (dims.loaded) {
+        // Re-calculate base size logic locally to ensure it uses the correct aspect ratio
+        // This duplicates some logic from getBasePanelSize but ensures correctness with overrides
+        const panelAspectRatio = dims.width / dims.height;
+
+        if (wallSegmentation) {
+          // Fallback logic mostly matches getBasePanelSize but tailored for this moment
+          // If we have detectedRectangles (which we do if we are here), we are fitting to one of them.
+          // getBasePanelSize usually looks at the largest wall or bounding box.
+          // To be 100% consistent with standard Snap, we should trust getBasePanelSize IF state was updated,
+          // but state isn't updated yet.
+
+          // So we compute what getBasePanelSize WOULD return for this panel
+          const largestWall = wallSegmentation.wallPlanes.reduce(
+            (largest, plane) => (plane.area > largest.area ? plane : largest),
+            wallSegmentation.wallPlanes[0],
+          );
+          if (largestWall) {
+            const wallBox = largestWall.boundingBox;
+            const wallWidthPx = (wallBox.xmax - wallBox.xmin) * rect.width;
+            const wallHeightPx = (wallBox.ymax - wallBox.ymin) * rect.height;
+
+            let targetHeight = wallHeightPx * 0.85;
+            let targetWidth = targetHeight * panelAspectRatio;
+
+            if (targetWidth > wallWidthPx * 0.9) {
+              targetWidth = wallWidthPx * 0.9;
+              targetHeight = targetWidth / panelAspectRatio;
+            }
+            baseSizeHeight = Math.max(150, targetHeight);
+          }
+        }
+      } else {
+        // Fallback to hook if no override (standard behavior)
+        baseSizeHeight = getBasePanelSize().height;
+      }
+
+      const newScale = targetHeight / (baseSizeHeight * targetDepthScale);
 
       setPanelTransform({
         x: targetX,
@@ -901,7 +991,9 @@ export function Visualizer() {
         rotateY: perspective.rotateY,
       });
 
-      toast.success(`Panel placed on wall ${rectangleIndex + 1}!`);
+      if (!panelOverride) {
+        toast.success(`Panel placed on wall ${rectangleIndex + 1}!`);
+      }
     },
     [
       wallSegmentation,
@@ -930,12 +1022,12 @@ export function Visualizer() {
       wallSegmentation.detectedRectangles?.length > 0
         ? wallSegmentation.detectedRectangles
         : wallSegmentation.wallPlanes?.map((plane) => ({
-            center: { x: plane.centerX, y: plane.centerY },
-            boundingBox: plane.boundingBox,
-            width: plane.boundingBox.xmax - plane.boundingBox.xmin,
-            height: plane.boundingBox.ymax - plane.boundingBox.ymin,
-            area: plane.area,
-          })) || [];
+          center: { x: plane.centerX, y: plane.centerY },
+          boundingBox: plane.boundingBox,
+          width: plane.boundingBox.xmax - plane.boundingBox.xmin,
+          height: plane.boundingBox.ymax - plane.boundingBox.ymin,
+          area: plane.area,
+        })) || [];
 
     if (!rectangles || rectangles.length === 0) {
       toast.error("No rectangular wall areas detected");
@@ -1104,66 +1196,32 @@ export function Visualizer() {
     (panel: WallPanel) => {
       setSelectedPanel(panel);
 
-      // If we have wall segmentation, position panel on the largest wall
+      // If we have wall segmentation, try to position panel on the first detected wall (Wall 1)
       if (
         wallSegmentation &&
-        wallSegmentation.wallPlanes.length > 0 &&
-        containerRef.current
+        containerRef.current &&
+        ((wallSegmentation.detectedRectangles && wallSegmentation.detectedRectangles.length > 0) ||
+          (wallSegmentation.wallPlanes && wallSegmentation.wallPlanes.length > 0))
       ) {
-        const container = containerRef.current;
-        const rect = container.getBoundingClientRect();
+        // Use logic from handleSnapToRectangle, but we must first load the image to get dimensions
+        // to pass as overrides, since state hasn't updated yet.
+        const img = new Image();
+        img.onload = () => {
+          const dims: PanelDimensions = {
+            width: img.naturalWidth,
+            height: img.naturalHeight,
+            loaded: true
+          };
+          // Snap to first rectangle (index 0) using this panel and these dimensions
+          handleSnapToRectangle(0, panel, dims);
+          toast.success(`${panel.name} placed on Wall 1!`);
+        };
+        img.src = panel.textureUrl;
+        return;
+      }
 
-        // Find the largest wall plane
-        const largestWall = wallSegmentation.wallPlanes.reduce(
-          (largest, plane) => (plane.area > largest.area ? plane : largest),
-          wallSegmentation.wallPlanes[0],
-        );
-
-        // Get initial position at the center of the largest wall
-        let normalizedCenterX = largestWall.centerX;
-        let normalizedCenterY = largestWall.centerY;
-
-        // Validate that this position is actually on the wall mask
-        // If not, find the nearest valid wall point
-        if (wallSegmentation.wallMask.length > 0) {
-          const isOnWall = isPointOnWall(
-            wallSegmentation.wallMask,
-            wallSegmentation.width,
-            wallSegmentation.height,
-            normalizedCenterX,
-            normalizedCenterY,
-          );
-
-          if (!isOnWall) {
-            // Find nearest wall point within the wall plane's bounding box
-            const nearestPoint = findNearestWallPoint(
-              normalizedCenterX,
-              normalizedCenterY,
-              0.5,
-            );
-            if (nearestPoint) {
-              normalizedCenterX = nearestPoint.x;
-              normalizedCenterY = nearestPoint.y;
-            }
-          }
-        }
-
-        // Position panel at the validated center
-        const centerX = normalizedCenterX * rect.width;
-        const centerY = normalizedCenterY * rect.height;
-
-        // Offset by half panel size to center it
-        const panelWidth = 150; // Base panel width
-        const panelHeight = 300; // Base panel height
-
-        setPanelTransform({
-          x: centerX - panelWidth / 2,
-          y: centerY - panelHeight / 2,
-          scale: 1,
-        });
-
-        toast.success(`${panel.name} placed on wall! Drag to reposition.`);
-      } else if (
+      // Fallback for no walls detected or other cases
+      if (
         wallSegmentation &&
         wallSegmentation.wallBoundingBox &&
         containerRef.current
@@ -1175,29 +1233,6 @@ export function Visualizer() {
 
         let normalizedCenterX = (box.xmin + box.xmax) / 2;
         let normalizedCenterY = (box.ymin + box.ymax) / 2;
-
-        // Validate position on wall mask
-        if (wallSegmentation.wallMask.length > 0) {
-          const isOnWall = isPointOnWall(
-            wallSegmentation.wallMask,
-            wallSegmentation.width,
-            wallSegmentation.height,
-            normalizedCenterX,
-            normalizedCenterY,
-          );
-
-          if (!isOnWall) {
-            const nearestPoint = findNearestWallPoint(
-              normalizedCenterX,
-              normalizedCenterY,
-              0.5,
-            );
-            if (nearestPoint) {
-              normalizedCenterX = nearestPoint.x;
-              normalizedCenterY = nearestPoint.y;
-            }
-          }
-        }
 
         const centerX = normalizedCenterX * rect.width;
         const centerY = normalizedCenterY * rect.height;
@@ -1217,7 +1252,7 @@ export function Visualizer() {
         );
       }
     },
-    [wallSegmentation, findNearestWallPoint],
+    [wallSegmentation, handleSnapToRectangle],
   );
 
   const handleDownload = useCallback(async () => {
@@ -1578,6 +1613,16 @@ export function Visualizer() {
                   <Button variant="minimal" size="sm" onClick={handleReset}>
                     New Photo
                   </Button>
+                  <div className="w-px h-6 bg-border mx-2" />
+                  <Button
+                    variant={showCompareMode ? "default" : "minimal"}
+                    size="sm"
+                    onClick={() => setShowCompareMode(!showCompareMode)}
+                    title="Toggle Before/After comparison"
+                  >
+                    <Split className="w-4 h-4 mr-1" />
+                    Compare
+                  </Button>
                 </div>
               </div>
 
@@ -1619,24 +1664,32 @@ export function Visualizer() {
                       }}
                     />
 
-                    {/* Wall mask overlay for visualization (semi-transparent) */}
-                    {wallSegmentation && wallSegmentation.wallMaskUrl && (
-                      <img
-                        src={wallSegmentation.wallMaskUrl}
-                        alt="Wall mask"
-                        className="absolute inset-0 w-full h-full object-cover pointer-events-none opacity-0"
-                      />
-                    )}
+                    {/* Comparison Wrapper - contains everything that is "After" state */}
+                    <div
+                      className="absolute inset-0 pointer-events-none"
+                      style={{
+                        clipPath: showCompareMode ? `inset(0 ${100 - comparePos}% 0 0)` : undefined,
+                        // Ensure we don't block events to children
+                      }}
+                    >
+                      {/* Wall mask overlay for visualization (semi-transparent) */}
+                      {wallSegmentation && wallSegmentation.wallMaskUrl && (
+                        <img
+                          src={wallSegmentation.wallMaskUrl}
+                          alt="Wall mask"
+                          className="absolute inset-0 w-full h-full object-cover pointer-events-none opacity-0"
+                        />
+                      )}
 
-                    {/* Wall selection buttons - show circle buttons at center of each detected wall */}
-                    {selectedPanel &&
-                      wallSegmentation &&
-                      (() => {
-                        // Use detectedRectangles if available, otherwise fallback to wallPlanes
-                        const rectangles =
-                          wallSegmentation.detectedRectangles?.length > 0
-                            ? wallSegmentation.detectedRectangles
-                            : wallSegmentation.wallPlanes?.map((plane) => ({
+                      {/* Wall selection buttons - show circle buttons at center of each detected wall */}
+                      {selectedPanel &&
+                        wallSegmentation &&
+                        (() => {
+                          // Use detectedRectangles if available, otherwise fallback to wallPlanes
+                          const rectangles =
+                            wallSegmentation.detectedRectangles?.length > 0
+                              ? wallSegmentation.detectedRectangles
+                              : wallSegmentation.wallPlanes?.map((plane) => ({
                                 center: { x: plane.centerX, y: plane.centerY },
                                 boundingBox: plane.boundingBox,
                                 width:
@@ -1648,112 +1701,143 @@ export function Visualizer() {
                                 area: plane.area,
                               })) || [];
 
-                        console.log(
-                          `[Visualizer] Wall buttons: ${rectangles.length} rectangles available`,
-                        );
+                          console.log(
+                            `[Visualizer] Wall buttons: ${rectangles.length} rectangles available`,
+                          );
 
-                        if (rectangles.length === 0) return null;
+                          if (rectangles.length === 0) return null;
 
-                        return (
-                          <div className="absolute inset-0 pointer-events-none">
-                            {rectangles.map((rect, index) => {
-                              // Find a valid position on the wall (not blocked by foreground)
-                              const validPos = findValidWallPosition(rect);
-                              return (
-                                <button
-                                  key={index}
-                                  onClick={() => handleSnapToRectangle(index)}
-                                  className="absolute w-10 h-10 -translate-x-1/2 -translate-y-1/2 rounded-full bg-anthracite/80 hover:bg-anthracite text-white border-2 border-white shadow-lg pointer-events-auto transition-all duration-200 hover:scale-110 flex items-center justify-center text-sm font-semibold"
-                                  style={{
-                                    left: `${validPos.x * 100}%`,
-                                    top: `${validPos.y * 100}%`,
-                                  }}
-                                  title={`Place panel on wall ${index + 1}`}
-                                >
-                                  {index + 1}
-                                </button>
-                              );
-                            })}
+                          return (
+                            <div className="absolute inset-0 pointer-events-none">
+                              {rectangles.map((rect, index) => {
+                                // Find a valid position on the wall (not blocked by foreground)
+                                const validPos = findValidWallPosition(rect);
+                                return (
+                                  <button
+                                    key={index}
+                                    onClick={() => handleSnapToRectangle(index)}
+                                    className="absolute w-10 h-10 -translate-x-1/2 -translate-y-1/2 rounded-full bg-anthracite/80 hover:bg-anthracite text-white border-2 border-white shadow-lg pointer-events-auto transition-all duration-200 hover:scale-110 flex items-center justify-center text-sm font-semibold"
+                                    style={{
+                                      left: `${validPos.x * 100}%`,
+                                      top: `${validPos.y * 100}%`,
+                                    }}
+                                    title={`Place panel on wall ${index + 1}`}
+                                  >
+                                    {index + 1}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          );
+                        })()}
+
+                      {/* Draggable panel overlay */}
+                      {selectedPanel && panelDimensions.loaded && (
+                        <div className="absolute inset-0 pointer-events-none overflow-hidden">
+                          <div
+                            className={cn(
+                              "absolute origin-center pointer-events-auto",
+                              isDragging ? "cursor-grabbing" : "cursor-grab",
+                            )}
+                            style={{
+                              left: panelTransform.x,
+                              top: panelTransform.y,
+                              width: scaledPanelWidth,
+                              height: scaledPanelHeight,
+                              transform: `rotateX(${panelRotation.rotateX}deg) rotateY(${panelRotation.rotateY}deg)`,
+                              transformStyle: "preserve-3d",
+                              // Use faster transition with ease-out for smoother feel, no transition while dragging
+                              transition: isDragging
+                                ? "none"
+                                : "transform 150ms ease-out",
+                            }}
+                            onMouseDown={handleMouseDown}
+                            onTouchStart={handleTouchStart}
+                          >
+                            <img
+                              src={selectedPanel.textureUrl}
+                              alt={selectedPanel.name}
+                              className="w-full h-full object-contain pointer-events-none"
+                              draggable={false}
+                              style={{
+                                filter: `brightness(${1 - depthAtPanel * 0.15})`,
+                              }}
+                            />
+
+                            {/* Hover indicator */}
+                            {!isDragging && (
+                              <>
+                                <div className="absolute inset-0 border-2 border-transparent group-hover:border-white/40 rounded transition-colors duration-200 pointer-events-none" />
+                                <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none">
+                                  <div className="bg-black/50 text-white px-3 py-1 rounded-full text-sm flex items-center gap-1">
+                                    <Move className="w-4 h-4" />
+                                    Drag to move
+                                  </div>
+                                </div>
+                              </>
+                            )}
                           </div>
-                        );
-                      })()}
+                        </div>
+                      )}
 
-                    {/* Draggable panel overlay */}
-                    {selectedPanel && panelDimensions.loaded && (
-                      <div className="absolute inset-0 pointer-events-none overflow-hidden">
-                        <div
-                          className={cn(
-                            "absolute origin-center pointer-events-auto",
-                            isDragging ? "cursor-grabbing" : "cursor-grab",
-                          )}
-                          style={{
-                            left: panelTransform.x,
-                            top: panelTransform.y,
-                            width: scaledPanelWidth,
-                            height: scaledPanelHeight,
-                            transform: `rotateX(${panelRotation.rotateX}deg) rotateY(${panelRotation.rotateY}deg)`,
-                            transformStyle: "preserve-3d",
-                            // Use faster transition with ease-out for smoother feel, no transition while dragging
-                            transition: isDragging
-                              ? "none"
-                              : "transform 150ms ease-out",
-                          }}
-                          onMouseDown={handleMouseDown}
-                          onTouchStart={handleTouchStart}
-                        >
+                      {/* Foreground overlay - shows non-wall objects ON TOP of the panel */}
+                      {/* Uses depth-enhanced mask for better precision, falls back to segmentation-only */}
+                      {/* Note: mask-mode: luminance removed for Android browser compatibility */}
+                      {selectedPanel &&
+                        (enhancedForegroundMaskUrl ||
+                          wallSegmentation?.foregroundMaskUrl) && (
                           <img
-                            src={selectedPanel.textureUrl}
-                            alt={selectedPanel.name}
-                            className="w-full h-full object-contain pointer-events-none"
+                            src={uploadedImage}
+                            alt="Foreground"
+                            className="absolute top-0 left-0 max-h-[75vh] w-auto max-w-full h-auto pointer-events-none"
                             draggable={false}
                             style={{
-                              filter: `brightness(${1 - depthAtPanel * 0.15})`,
+                              WebkitMaskImage: `url(${enhancedForegroundMaskUrl ||
+                                wallSegmentation?.foregroundMaskUrl
+                                })`,
+                              maskImage: `url(${enhancedForegroundMaskUrl ||
+                                wallSegmentation?.foregroundMaskUrl
+                                })`,
+                              WebkitMaskSize: "100% 100%",
+                              maskSize: "100% 100%",
+                              WebkitMaskRepeat: "no-repeat",
+                              maskRepeat: "no-repeat",
                             }}
                           />
+                        )}
+                    </div>
 
-                          {/* Hover indicator */}
-                          {!isDragging && (
-                            <>
-                              <div className="absolute inset-0 border-2 border-transparent group-hover:border-white/40 rounded transition-colors duration-200 pointer-events-none" />
-                              <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none">
-                                <div className="bg-black/50 text-white px-3 py-1 rounded-full text-sm flex items-center gap-1">
-                                  <Move className="w-4 h-4" />
-                                  Drag to move
-                                </div>
-                              </div>
-                            </>
-                          )}
+                    {/* Compare Slider Handle */}
+                    {showCompareMode && (
+                      <div
+                        className="absolute inset-y-0 touch-none pointer-events-auto cursor-ew-resize z-50 group"
+                        style={{ left: `${comparePos}%` }}
+                        onMouseDown={(e) => {
+                          e.stopPropagation();
+                          setIsDraggingSlider(true);
+                        }}
+                        onTouchStart={(e) => {
+                          e.stopPropagation();
+                          setIsDraggingSlider(true);
+                        }}
+                      >
+                        {/* Line */}
+                        <div className="absolute inset-y-0 -left-px w-0.5 bg-white shadow-[0_0_10px_rgba(0,0,0,0.5)] transition-colors group-hover:bg-anthracite" />
+
+                        {/* Handle Circle */}
+                        <div className="absolute top-1/2 left-0 -translate-x-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-white shadow-lg flex items-center justify-center transform transition-transform group-hover:scale-110">
+                          <GripVertical className="w-4 h-4 text-anthracite" />
+                        </div>
+
+                        {/* Labels */}
+                        <div className="absolute top-4 right-4 bg-black/50 text-white text-xs px-2 py-1 rounded backdrop-blur-sm pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity">
+                          Before
+                        </div>
+                        <div className="absolute top-4 left-4 bg-black/50 text-white text-xs px-2 py-1 rounded backdrop-blur-sm pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity">
+                          After
                         </div>
                       </div>
                     )}
-
-                    {/* Foreground overlay - shows non-wall objects ON TOP of the panel */}
-                    {/* Uses depth-enhanced mask for better precision, falls back to segmentation-only */}
-                    {/* Note: mask-mode: luminance removed for Android browser compatibility */}
-                    {selectedPanel &&
-                      (enhancedForegroundMaskUrl ||
-                        wallSegmentation?.foregroundMaskUrl) && (
-                        <img
-                          src={uploadedImage}
-                          alt="Foreground"
-                          className="absolute top-0 left-0 max-h-[75vh] w-auto max-w-full h-auto pointer-events-none"
-                          draggable={false}
-                          style={{
-                            WebkitMaskImage: `url(${
-                              enhancedForegroundMaskUrl ||
-                              wallSegmentation?.foregroundMaskUrl
-                            })`,
-                            maskImage: `url(${
-                              enhancedForegroundMaskUrl ||
-                              wallSegmentation?.foregroundMaskUrl
-                            })`,
-                            WebkitMaskSize: "100% 100%",
-                            maskSize: "100% 100%",
-                            WebkitMaskRepeat: "no-repeat",
-                            maskRepeat: "no-repeat",
-                          }}
-                        />
-                      )}
 
                     {/* Depth mask canvas for composite generation */}
                     <canvas
@@ -1775,7 +1859,7 @@ export function Visualizer() {
                   </div>
 
                   {/* Transform info */}
-                  {selectedPanel && (
+                  {selectedPanel && !showCompareMode && (
                     <div className="mt-3 flex items-center justify-center gap-4 text-xs text-muted-foreground">
                       <span>Tilt X: {panelRotation.rotateX.toFixed(1)}°</span>
                       <span>Tilt Y: {panelRotation.rotateY.toFixed(1)}°</span>

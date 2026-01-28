@@ -64,3 +64,15 @@ We will use `@huggingface/transformers` with the `depth-anything-small-hf` model
 5.  Adjust depth sensitivity slider if needed.
 6.  Select a panel and apply visualization.
 7.  Verify that foreground objects (furniture, people) remain visible while wall gets textured.
+
+### [DONE] Before / After Comparison
+
+- Added a split slider to compare the original image (Before) with the visualization (After).
+- Implemented as an optional toggle "Compare".
+- Wraps the wall mask, panel, and foreground overlay in a clipped container controlled by the slider.
+
+### [DONE] Auto Panel Placement
+
+- Modified `handleSelectPanel` to automatically place the selected panel on the **first detected wall (Wall 1)**.
+- Uses `detectedRectangles[0]` to determine position, scale, perspective, and depth sampling.
+- Provides immediate visual feedback when a panel is clicked, removing the need to drag it manually first.
