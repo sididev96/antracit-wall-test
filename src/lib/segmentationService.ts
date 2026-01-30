@@ -284,12 +284,12 @@ function shouldSkipMLModels(): boolean {
 // Desktop: RMBG-1.4 with image-segmentation pipeline (high quality, ~176MB)
 // Mobile: MODNet with background-removal pipeline (light weight, ~6.6MB)
 // Semantic: SegFormer for true wall detection (ADE20K trained, well-tested with transformers.js)
-//   - Desktop: b2 variant (~50MB, better quality)
-//   - Mobile: b0 variant (~14MB, lighter weight, works on Android)
+//   - Using b5 variant (~340MB quantized) for both desktop and mobile - highest quality wall detection
+//   - Input images are resized to 640px max dimension to match model's expected input size
 const SEGMENTATION_MODEL = "briaai/RMBG-1.4";
 const MOBILE_MODEL = "Xenova/modnet";
-const SEMANTIC_MODEL_DESKTOP = "Xenova/segformer-b2-finetuned-ade-512-512";
-const SEMANTIC_MODEL_MOBILE = "Xenova/segformer-b0-finetuned-ade-512-512";
+const SEMANTIC_MODEL_DESKTOP = "Xenova/segformer-b5-finetuned-ade-640-640";
+const SEMANTIC_MODEL_MOBILE = "Xenova/segformer-b5-finetuned-ade-640-640";
 
 // Get the appropriate semantic model based on device
 function getSemanticModel(): string {
@@ -409,8 +409,8 @@ async function simpleWallDetection(
             // Calculate color distance
             const distance = Math.sqrt(
               Math.pow(r - wallR, 2) +
-                Math.pow(g - wallG, 2) +
-                Math.pow(b - wallB, 2),
+              Math.pow(g - wallG, 2) +
+              Math.pow(b - wallB, 2),
             );
 
             // Also check if it's not too dark (floor) or has high saturation (furniture)
@@ -527,11 +527,11 @@ async function simpleWallDetection(
           wallBoundingBox:
             wallPixelCount > 0
               ? {
-                  xmin: minX / width,
-                  ymin: minY / height,
-                  xmax: maxX / width,
-                  ymax: maxY / height,
-                }
+                xmin: minX / width,
+                ymin: minY / height,
+                xmax: maxX / width,
+                ymax: maxY / height,
+              }
               : null,
           wallArea,
           width,
@@ -554,7 +554,406 @@ async function simpleWallDetection(
 }
 
 /**
+ * Analyze the wall mask boundary to find significant corner points.
+ * These corners often indicate where different walls meet.
+ */
+function findWallCorners(
+  wallMask: Uint8Array,
+  width: number,
+  height: number,
+  component: { pixels: number[]; minX: number; minY: number; maxX: number; maxY: number }
+): { x: number; y: number }[] {
+  const corners: { x: number; y: number; angle: number }[] = [];
+  
+  // Create a set for quick lookup
+  const pixelSet = new Set(component.pixels);
+  
+  // Find boundary pixels (pixels that have at least one non-wall neighbor)
+  const boundaryPixels: { x: number; y: number }[] = [];
+  for (const idx of component.pixels) {
+    const x = idx % width;
+    const y = Math.floor(idx / width);
+    
+    // Check if this is a boundary pixel
+    const neighbors = [
+      y > 0 ? idx - width : -1,
+      y < height - 1 ? idx + width : -1,
+      x > 0 ? idx - 1 : -1,
+      x < width - 1 ? idx + 1 : -1,
+    ];
+    
+    for (const nIdx of neighbors) {
+      if (nIdx === -1 || !pixelSet.has(nIdx)) {
+        boundaryPixels.push({ x, y });
+        break;
+      }
+    }
+  }
+  
+  if (boundaryPixels.length < 10) return [];
+  
+  // Sample boundary points at regular intervals
+  const sampleInterval = Math.max(1, Math.floor(boundaryPixels.length / 100));
+  const sampledPoints = boundaryPixels.filter((_, i) => i % sampleInterval === 0);
+  
+  // Find points with high curvature (corners)
+  const windowSize = Math.max(3, Math.floor(sampledPoints.length / 20));
+  
+  for (let i = windowSize; i < sampledPoints.length - windowSize; i++) {
+    const prev = sampledPoints[i - windowSize];
+    const curr = sampledPoints[i];
+    const next = sampledPoints[i + windowSize];
+    
+    // Calculate vectors
+    const v1 = { x: curr.x - prev.x, y: curr.y - prev.y };
+    const v2 = { x: next.x - curr.x, y: next.y - curr.y };
+    
+    // Calculate angle between vectors
+    const dot = v1.x * v2.x + v1.y * v2.y;
+    const cross = v1.x * v2.y - v1.y * v2.x;
+    const angle = Math.abs(Math.atan2(cross, dot));
+    
+    // If angle is significant (> 45 degrees), it's a corner
+    if (angle > Math.PI / 4) {
+      corners.push({ x: curr.x, y: curr.y, angle });
+    }
+  }
+  
+  // Merge nearby corners and keep the most significant ones
+  const mergeDistance = Math.max(width, height) * 0.05;
+  const mergedCorners: { x: number; y: number }[] = [];
+  
+  for (const corner of corners) {
+    let merged = false;
+    for (const existing of mergedCorners) {
+      const dist = Math.sqrt((corner.x - existing.x) ** 2 + (corner.y - existing.y) ** 2);
+      if (dist < mergeDistance) {
+        merged = true;
+        break;
+      }
+    }
+    if (!merged) {
+      mergedCorners.push({ x: corner.x, y: corner.y });
+    }
+  }
+  
+  return mergedCorners;
+}
+
+/**
+ * Split a connected wall region into multiple sub-regions based on geometric analysis.
+ * Uses vertical and horizontal scan lines to detect internal boundaries.
+ */
+function splitConnectedWallRegion(
+  wallMask: Uint8Array,
+  width: number,
+  height: number,
+  component: { pixels: number[]; minX: number; minY: number; maxX: number; maxY: number }
+): DetectedRectangle[] {
+  const pixelSet = new Set(component.pixels);
+  const boxWidth = component.maxX - component.minX + 1;
+  const boxHeight = component.maxY - component.minY + 1;
+  
+  // If the region is too small, treat as single rectangle
+  const minSplitSize = Math.max(width, height) * 0.15;
+  if (boxWidth < minSplitSize || boxHeight < minSplitSize) {
+    return [];
+  }
+  
+  // Analyze vertical slices to find gaps or thin connections
+  const verticalProfile: number[] = [];
+  for (let x = component.minX; x <= component.maxX; x++) {
+    let count = 0;
+    for (let y = component.minY; y <= component.maxY; y++) {
+      if (pixelSet.has(y * width + x)) count++;
+    }
+    verticalProfile.push(count);
+  }
+  
+  // Analyze horizontal slices
+  const horizontalProfile: number[] = [];
+  for (let y = component.minY; y <= component.maxY; y++) {
+    let count = 0;
+    for (let x = component.minX; x <= component.maxX; x++) {
+      if (pixelSet.has(y * width + x)) count++;
+    }
+    horizontalProfile.push(count);
+  }
+  
+  // Find significant valleys in profiles (potential split points)
+  const avgVertical = verticalProfile.reduce((a, b) => a + b, 0) / verticalProfile.length;
+  const avgHorizontal = horizontalProfile.reduce((a, b) => a + b, 0) / horizontalProfile.length;
+  
+  const verticalSplits: number[] = [];
+  const horizontalSplits: number[] = [];
+  
+  // Look for narrow "necks" that might indicate wall boundaries
+  const neckThreshold = 0.3; // A valley must be less than 30% of average to be a split
+  
+  for (let i = Math.floor(verticalProfile.length * 0.1); i < verticalProfile.length * 0.9; i++) {
+    if (verticalProfile[i] < avgVertical * neckThreshold) {
+      verticalSplits.push(component.minX + i);
+    }
+  }
+  
+  for (let i = Math.floor(horizontalProfile.length * 0.1); i < horizontalProfile.length * 0.9; i++) {
+    if (horizontalProfile[i] < avgHorizontal * neckThreshold) {
+      horizontalSplits.push(component.minY + i);
+    }
+  }
+  
+  // If we found clear split points, use them to create sub-regions
+  const subRegions: DetectedRectangle[] = [];
+  
+  // For now, if we found vertical splits, create left/right regions
+  if (verticalSplits.length > 0) {
+    // Use the most significant split (where profile is lowest)
+    let bestSplit = verticalSplits[0];
+    let lowestValue = verticalProfile[bestSplit - component.minX];
+    for (const split of verticalSplits) {
+      const value = verticalProfile[split - component.minX];
+      if (value < lowestValue) {
+        lowestValue = value;
+        bestSplit = split;
+      }
+    }
+    
+    // Create left region
+    const leftPixels = component.pixels.filter(idx => (idx % width) < bestSplit);
+    if (leftPixels.length > 0) {
+      const leftMinX = Math.min(...leftPixels.map(idx => idx % width));
+      const leftMaxX = Math.max(...leftPixels.map(idx => idx % width));
+      const leftMinY = Math.min(...leftPixels.map(idx => Math.floor(idx / width)));
+      const leftMaxY = Math.max(...leftPixels.map(idx => Math.floor(idx / width)));
+      
+      const normMinX = leftMinX / width;
+      const normMinY = leftMinY / height;
+      const normMaxX = leftMaxX / width;
+      const normMaxY = leftMaxY / height;
+      
+      subRegions.push({
+        corners: [
+          { x: normMinX, y: normMinY },
+          { x: normMaxX, y: normMinY },
+          { x: normMaxX, y: normMaxY },
+          { x: normMinX, y: normMaxY },
+        ],
+        boundingBox: { xmin: normMinX, ymin: normMinY, xmax: normMaxX, ymax: normMaxY },
+        center: { x: (normMinX + normMaxX) / 2, y: (normMinY + normMaxY) / 2 },
+        width: normMaxX - normMinX,
+        height: normMaxY - normMinY,
+        area: leftPixels.length / (width * height),
+        aspectRatio: (normMaxX - normMinX) / (normMaxY - normMinY),
+      });
+    }
+    
+    // Create right region
+    const rightPixels = component.pixels.filter(idx => (idx % width) > bestSplit);
+    if (rightPixels.length > 0) {
+      const rightMinX = Math.min(...rightPixels.map(idx => idx % width));
+      const rightMaxX = Math.max(...rightPixels.map(idx => idx % width));
+      const rightMinY = Math.min(...rightPixels.map(idx => Math.floor(idx / width)));
+      const rightMaxY = Math.max(...rightPixels.map(idx => Math.floor(idx / width)));
+      
+      const normMinX = rightMinX / width;
+      const normMinY = rightMinY / height;
+      const normMaxX = rightMaxX / width;
+      const normMaxY = rightMaxY / height;
+      
+      subRegions.push({
+        corners: [
+          { x: normMinX, y: normMinY },
+          { x: normMaxX, y: normMinY },
+          { x: normMaxX, y: normMaxY },
+          { x: normMinX, y: normMaxY },
+        ],
+        boundingBox: { xmin: normMinX, ymin: normMinY, xmax: normMaxX, ymax: normMaxY },
+        center: { x: (normMinX + normMaxX) / 2, y: (normMinY + normMaxY) / 2 },
+        width: normMaxX - normMinX,
+        height: normMaxY - normMinY,
+        area: rightPixels.length / (width * height),
+        aspectRatio: (normMaxX - normMinX) / (normMaxY - normMinY),
+      });
+    }
+  }
+  
+  // Similarly for horizontal splits
+  if (horizontalSplits.length > 0 && subRegions.length === 0) {
+    let bestSplit = horizontalSplits[0];
+    let lowestValue = horizontalProfile[bestSplit - component.minY];
+    for (const split of horizontalSplits) {
+      const value = horizontalProfile[split - component.minY];
+      if (value < lowestValue) {
+        lowestValue = value;
+        bestSplit = split;
+      }
+    }
+    
+    // Create top region
+    const topPixels = component.pixels.filter(idx => Math.floor(idx / width) < bestSplit);
+    if (topPixels.length > 0) {
+      const topMinX = Math.min(...topPixels.map(idx => idx % width));
+      const topMaxX = Math.max(...topPixels.map(idx => idx % width));
+      const topMinY = Math.min(...topPixels.map(idx => Math.floor(idx / width)));
+      const topMaxY = Math.max(...topPixels.map(idx => Math.floor(idx / width)));
+      
+      const normMinX = topMinX / width;
+      const normMinY = topMinY / height;
+      const normMaxX = topMaxX / width;
+      const normMaxY = topMaxY / height;
+      
+      subRegions.push({
+        corners: [
+          { x: normMinX, y: normMinY },
+          { x: normMaxX, y: normMinY },
+          { x: normMaxX, y: normMaxY },
+          { x: normMinX, y: normMaxY },
+        ],
+        boundingBox: { xmin: normMinX, ymin: normMinY, xmax: normMaxX, ymax: normMaxY },
+        center: { x: (normMinX + normMaxX) / 2, y: (normMinY + normMaxY) / 2 },
+        width: normMaxX - normMinX,
+        height: normMaxY - normMinY,
+        area: topPixels.length / (width * height),
+        aspectRatio: (normMaxX - normMinX) / (normMaxY - normMinY),
+      });
+    }
+    
+    // Create bottom region
+    const bottomPixels = component.pixels.filter(idx => Math.floor(idx / width) > bestSplit);
+    if (bottomPixels.length > 0) {
+      const bottomMinX = Math.min(...bottomPixels.map(idx => idx % width));
+      const bottomMaxX = Math.max(...bottomPixels.map(idx => idx % width));
+      const bottomMinY = Math.min(...bottomPixels.map(idx => Math.floor(idx / width)));
+      const bottomMaxY = Math.max(...bottomPixels.map(idx => Math.floor(idx / width)));
+      
+      const normMinX = bottomMinX / width;
+      const normMinY = bottomMinY / height;
+      const normMaxX = bottomMaxX / width;
+      const normMaxY = bottomMaxY / height;
+      
+      subRegions.push({
+        corners: [
+          { x: normMinX, y: normMinY },
+          { x: normMaxX, y: normMinY },
+          { x: normMaxX, y: normMaxY },
+          { x: normMinX, y: normMaxY },
+        ],
+        boundingBox: { xmin: normMinX, ymin: normMinY, xmax: normMaxX, ymax: normMaxY },
+        center: { x: (normMinX + normMaxX) / 2, y: (normMinY + normMaxY) / 2 },
+        width: normMaxX - normMinX,
+        height: normMaxY - normMinY,
+        area: bottomPixels.length / (width * height),
+        aspectRatio: (normMaxX - normMinX) / (normMaxY - normMinY),
+      });
+    }
+  }
+  
+  return subRegions;
+}
+
+/**
+ * Split a large wall region into grid-based sub-regions if no natural splits are found.
+ * This handles L-shaped or corner rooms where walls are fully connected.
+ */
+function splitIntoGridRegions(
+  wallMask: Uint8Array,
+  width: number,
+  height: number,
+  component: { pixels: number[]; minX: number; minY: number; maxX: number; maxY: number },
+  aspectRatio: number
+): DetectedRectangle[] {
+  const pixelSet = new Set(component.pixels);
+  const boxWidth = component.maxX - component.minX + 1;
+  const boxHeight = component.maxY - component.minY + 1;
+  const boxAspect = boxWidth / boxHeight;
+  
+  const regions: DetectedRectangle[] = [];
+  
+  // Determine grid divisions based on aspect ratio
+  let cols = 1;
+  let rows = 1;
+  
+  // If the wall region is very wide, split into columns
+  if (boxAspect > 2.5) {
+    cols = Math.min(3, Math.ceil(boxAspect / 1.5));
+  }
+  // If very tall, split into rows
+  else if (boxAspect < 0.4) {
+    rows = Math.min(3, Math.ceil(1.5 / boxAspect));
+  }
+  // If roughly square but large, consider 2x1 or 1x2 split
+  else if (boxWidth > width * 0.6 && boxHeight > height * 0.6) {
+    // Large region covering most of the image - likely multiple walls
+    if (boxAspect > 1.2) {
+      cols = 2;
+    } else if (boxAspect < 0.8) {
+      rows = 2;
+    }
+  }
+  
+  if (cols === 1 && rows === 1) return regions;
+  
+  const cellWidth = boxWidth / cols;
+  const cellHeight = boxHeight / rows;
+  
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const cellMinX = Math.floor(component.minX + col * cellWidth);
+      const cellMaxX = Math.floor(component.minX + (col + 1) * cellWidth);
+      const cellMinY = Math.floor(component.minY + row * cellHeight);
+      const cellMaxY = Math.floor(component.minY + (row + 1) * cellHeight);
+      
+      // Count pixels in this cell
+      let pixelCount = 0;
+      let actualMinX = cellMaxX, actualMaxX = cellMinX;
+      let actualMinY = cellMaxY, actualMaxY = cellMinY;
+      
+      for (let y = cellMinY; y < cellMaxY; y++) {
+        for (let x = cellMinX; x < cellMaxX; x++) {
+          if (pixelSet.has(y * width + x)) {
+            pixelCount++;
+            actualMinX = Math.min(actualMinX, x);
+            actualMaxX = Math.max(actualMaxX, x);
+            actualMinY = Math.min(actualMinY, y);
+            actualMaxY = Math.max(actualMaxY, y);
+          }
+        }
+      }
+      
+      // Only add if this cell has significant content (>50% filled)
+      const cellArea = (cellMaxX - cellMinX) * (cellMaxY - cellMinY);
+      if (pixelCount > cellArea * 0.4) {
+        const normMinX = actualMinX / width;
+        const normMinY = actualMinY / height;
+        const normMaxX = actualMaxX / width;
+        const normMaxY = actualMaxY / height;
+        const normWidth = normMaxX - normMinX;
+        const normHeight = normMaxY - normMinY;
+        
+        regions.push({
+          corners: [
+            { x: normMinX, y: normMinY },
+            { x: normMaxX, y: normMinY },
+            { x: normMaxX, y: normMaxY },
+            { x: normMinX, y: normMaxY },
+          ],
+          boundingBox: { xmin: normMinX, ymin: normMinY, xmax: normMaxX, ymax: normMaxY },
+          center: { x: (normMinX + normMaxX) / 2, y: (normMinY + normMaxY) / 2 },
+          width: normWidth,
+          height: normHeight,
+          area: pixelCount / (width * height),
+          aspectRatio: normWidth / normHeight,
+        });
+      }
+    }
+  }
+  
+  return regions;
+}
+
+/**
  * Detect rectangular regions within the wall mask using contour analysis.
+ * Now includes logic to split connected wall regions into separate planes.
  * Returns rectangles sorted by area (largest first).
  */
 function detectRectanglesInMask(
@@ -623,6 +1022,8 @@ function detectRectanglesInMask(
     }
   }
 
+  console.log(`[Segmentation] Found ${components.length} connected components`);
+
   // Analyze each component for rectangular-ness
   for (const component of components) {
     const boxWidth = component.maxX - component.minX + 1;
@@ -635,10 +1036,45 @@ function detectRectanglesInMask(
 
     // Skip if too small
     const areaRatio = pixelCount / (width * height);
-    if (areaRatio < minAreaRatio) continue;
+    if (areaRatio < minAreaRatio) {
+      console.log(`[Segmentation] Skipping component: area ${(areaRatio * 100).toFixed(1)}% < ${minAreaRatio * 100}%`);
+      continue;
+    }
 
-    // Consider it rectangular if fill ratio is high enough (>75%)
-    if (fillRatio > 0.75) {
+    console.log(`[Segmentation] Component: ${boxWidth}x${boxHeight}, fill=${(fillRatio * 100).toFixed(1)}%, area=${(areaRatio * 100).toFixed(1)}%`);
+
+    // Check if this is a large region that might contain multiple walls
+    const isLargeRegion = areaRatio > 0.15; // More than 15% of image
+    const hasNonRectangularShape = fillRatio < 0.85; // Less than 85% filled
+    
+    if (isLargeRegion || hasNonRectangularShape) {
+      // Try to split into sub-regions
+      console.log(`[Segmentation] Attempting to split large/irregular region...`);
+      
+      // First try natural boundary detection
+      const splitRegions = splitConnectedWallRegion(wallMask, width, height, component);
+      
+      if (splitRegions.length > 1) {
+        console.log(`[Segmentation] Split into ${splitRegions.length} natural sub-regions`);
+        rectangles.push(...splitRegions);
+        continue;
+      }
+      
+      // If no natural splits found, try grid-based splitting for very large regions
+      if (areaRatio > 0.25) {
+        const boxAspect = boxWidth / boxHeight;
+        const gridRegions = splitIntoGridRegions(wallMask, width, height, component, boxAspect);
+        
+        if (gridRegions.length > 1) {
+          console.log(`[Segmentation] Split into ${gridRegions.length} grid sub-regions`);
+          rectangles.push(...gridRegions);
+          continue;
+        }
+      }
+    }
+
+    // If fill ratio is high enough (>70%), treat as single rectangle
+    if (fillRatio > 0.70) {
       const normMinX = component.minX / width;
       const normMinY = component.minY / height;
       const normMaxX = component.maxX / width;
@@ -668,6 +1104,8 @@ function detectRectanglesInMask(
         area: areaRatio,
         aspectRatio: normWidth / normHeight,
       });
+    } else {
+      console.log(`[Segmentation] Skipping component: fill ratio ${(fillRatio * 100).toFixed(1)}% < 70%`);
     }
   }
 
@@ -677,14 +1115,22 @@ function detectRectanglesInMask(
   console.log(
     `[Segmentation] Detected ${rectangles.length} rectangular regions`,
   );
+  
+  // Log details of each detected rectangle
+  rectangles.forEach((rect, i) => {
+    console.log(`  [${i}] area=${(rect.area * 100).toFixed(1)}%, aspect=${rect.aspectRatio.toFixed(2)}, center=(${rect.center.x.toFixed(2)}, ${rect.center.y.toFixed(2)})`);
+  });
+  
   return rectangles;
 }
 
 /**
  * Resize an image to fit within max dimensions while maintaining aspect ratio
  * Returns a data URL of the resized image along with original and new dimensions
+ * @param imageUrl - The image URL to resize
+ * @param maxSize - Optional maximum dimension (defaults to MAX_SEGMENTATION_SIZE)
  */
-async function resizeImageForSegmentation(imageUrl: string): Promise<{
+async function resizeImageForSegmentation(imageUrl: string, maxSize?: number): Promise<{
   dataUrl: string;
   scale: number;
   originalWidth: number;
@@ -692,6 +1138,7 @@ async function resizeImageForSegmentation(imageUrl: string): Promise<{
   newWidth: number;
   newHeight: number;
 }> {
+  const targetMaxSize = maxSize ?? MAX_SEGMENTATION_SIZE;
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "anonymous";
@@ -699,10 +1146,10 @@ async function resizeImageForSegmentation(imageUrl: string): Promise<{
     img.onload = () => {
       const { width, height } = img;
 
-      // Calculate scale factor to fit within MAX_SEGMENTATION_SIZE
+      // Calculate scale factor to fit within targetMaxSize
       const maxDim = Math.max(width, height);
       const scale =
-        maxDim > MAX_SEGMENTATION_SIZE ? MAX_SEGMENTATION_SIZE / maxDim : 1;
+        maxDim > targetMaxSize ? targetMaxSize / maxDim : 1;
 
       const newWidth = Math.round(width * scale);
       const newHeight = Math.round(height * scale);
@@ -1009,7 +1456,9 @@ async function initSemanticPipeline(
       );
 
       // Use image-segmentation pipeline for SegFormer
+      // Use q8 (quantized) dtype for better performance and smaller download size (~89MB vs ~341MB)
       const pipe = await pipeline("image-segmentation", modelToUse, {
+        dtype: "q8",
         progress_callback: (data: {
           progress?: number;
           status?: string;
@@ -1126,7 +1575,8 @@ async function segmentWallsSemantic(
 ): Promise<WallSegmentationResult> {
   try {
     // Step 1: Resize image for processing and get original dimensions
-    console.log("[Segmentation Semantic] Step 1: Resizing image...");
+    // Use 640px max dimension to match SegFormer B5's expected input size
+    console.log("[Segmentation Semantic] Step 1: Resizing image to 640px...");
     onProgress?.(10, "Preparing image...");
     const {
       dataUrl: resizedImageUrl,
@@ -1134,7 +1584,7 @@ async function segmentWallsSemantic(
       originalHeight,
       newWidth,
       newHeight,
-    } = await resizeImageForSegmentation(imageUrl);
+    } = await resizeImageForSegmentation(imageUrl, 640);
 
     console.log(
       `[Segmentation Semantic] Original: ${originalWidth}x${originalHeight}, Resized: ${newWidth}x${newHeight}`,
@@ -1635,11 +2085,11 @@ function processSemanticMasksWithUpscale(
     wallBoundingBox:
       wallPixelCount > 0
         ? {
-            xmin: minX / targetWidth,
-            ymin: minY / targetHeight,
-            xmax: maxX / targetWidth,
-            ymax: maxY / targetHeight,
-          }
+          xmin: minX / targetWidth,
+          ymin: minY / targetHeight,
+          xmax: maxX / targetWidth,
+          ymax: maxY / targetHeight,
+        }
         : null,
     wallArea: wallPixelCount / (targetWidth * targetHeight),
     width: targetWidth,
@@ -1807,11 +2257,11 @@ function processSemanticMasks(
     wallBoundingBox:
       wallPixelCount > 0
         ? {
-            xmin: minX / width,
-            ymin: minY / height,
-            xmax: maxX / width,
-            ymax: maxY / height,
-          }
+          xmin: minX / width,
+          ymin: minY / height,
+          xmax: maxX / width,
+          ymax: maxY / height,
+        }
         : null,
     wallArea: wallPixelCount / (width * height),
     width,
@@ -2113,11 +2563,11 @@ function finalizeMaskResult(
     wallBoundingBox:
       wallPixelCount > 0
         ? {
-            xmin: minX / width,
-            ymin: minY / height,
-            xmax: maxX / width,
-            ymax: maxY / height,
-          }
+          xmin: minX / width,
+          ymin: minY / height,
+          xmax: maxX / width,
+          ymax: maxY / height,
+        }
         : null,
     wallArea,
     width,
@@ -2282,4 +2732,367 @@ export function fitPanelToRectangle(
     width: panelWidth * containerWidth,
     height: panelHeight * containerHeight,
   };
+}
+
+/**
+ * Calculate wall orientation (rotation) from the wall mask shape.
+ * Analyzes edge profiles to determine perspective/tilt based on mask geometry.
+ *
+ * This uses the wall mask shape rather than depth data to determine rotation:
+ * - rotateY (horizontal tilt): Based on left/right edge slope convergence
+ * - rotateX (vertical tilt): Based on top/bottom edge width difference
+ *
+ * @param wallMask - Binary mask where 255 = wall, 0 = not wall
+ * @param width - Width of the mask in pixels
+ * @param height - Height of the mask in pixels
+ * @param normalizedX - X position (0-1) where the panel center is
+ * @param normalizedY - Y position (0-1) where the panel center is
+ * @returns Rotation angles for panel placement
+ */
+export function calculateWallOrientationFromMask(
+  wallMask: Uint8Array,
+  width: number,
+  height: number,
+  normalizedX: number,
+  normalizedY: number,
+): { rotateX: number; rotateY: number } {
+  if (wallMask.length === 0 || width === 0 || height === 0) {
+    return { rotateX: 0, rotateY: 0 };
+  }
+
+  // Find the wall region around the panel position
+  const centerX = Math.floor(normalizedX * width);
+  const centerY = Math.floor(normalizedY * height);
+
+  // Define sampling region (25% of image around center point)
+  const regionRadius = Math.min(width, height) * 0.25;
+  const sampleLeft = Math.max(0, Math.floor(centerX - regionRadius));
+  const sampleRight = Math.min(width - 1, Math.floor(centerX + regionRadius));
+  const sampleTop = Math.max(0, Math.floor(centerY - regionRadius));
+  const sampleBottom = Math.min(height - 1, Math.floor(centerY + regionRadius));
+
+  // Sample multiple horizontal scanlines to find left and right edges
+  const numScanlines = 10;
+  const leftEdges: number[] = [];
+  const rightEdges: number[] = [];
+  const scanlineYs: number[] = [];
+
+  for (let i = 0; i < numScanlines; i++) {
+    const y = sampleTop + Math.floor((i / (numScanlines - 1)) * (sampleBottom - sampleTop));
+    scanlineYs.push(y);
+
+    // Find left edge (first wall pixel from left)
+    let leftEdge = -1;
+    for (let x = sampleLeft; x <= sampleRight; x++) {
+      const idx = y * width + x;
+      if (wallMask[idx] > 0) {
+        leftEdge = x;
+        break;
+      }
+    }
+
+    // Find right edge (first wall pixel from right)
+    let rightEdge = -1;
+    for (let x = sampleRight; x >= sampleLeft; x--) {
+      const idx = y * width + x;
+      if (wallMask[idx] > 0) {
+        rightEdge = x;
+        break;
+      }
+    }
+
+    if (leftEdge >= 0) leftEdges.push(leftEdge);
+    if (rightEdge >= 0) rightEdges.push(rightEdge);
+  }
+
+  // Sample multiple vertical scanlines to find top and bottom edges
+  const topEdges: number[] = [];
+  const bottomEdges: number[] = [];
+
+  for (let i = 0; i < numScanlines; i++) {
+    const x = sampleLeft + Math.floor((i / (numScanlines - 1)) * (sampleRight - sampleLeft));
+
+    // Find top edge (first wall pixel from top)
+    let topEdge = -1;
+    for (let y = sampleTop; y <= sampleBottom; y++) {
+      const idx = y * width + x;
+      if (wallMask[idx] > 0) {
+        topEdge = y;
+        break;
+      }
+    }
+
+    // Find bottom edge (first wall pixel from bottom)
+    let bottomEdge = -1;
+    for (let y = sampleBottom; y >= sampleTop; y--) {
+      const idx = y * width + x;
+      if (wallMask[idx] > 0) {
+        bottomEdge = y;
+        break;
+      }
+    }
+
+    if (topEdge >= 0) topEdges.push(topEdge);
+    if (bottomEdge >= 0) bottomEdges.push(bottomEdge);
+  }
+
+  // Calculate rotateY from left/right edge convergence
+  // If left edges move right as we go down and right edges move left -> wall faces camera
+  // If left edges move left as we go down and right edges move right -> wall tilts away
+  let rotateY = 0;
+  if (leftEdges.length >= 2 && rightEdges.length >= 2) {
+    // Calculate slope of left edge (positive = edges converge going down = perspective)
+    const leftSlope = (leftEdges[leftEdges.length - 1] - leftEdges[0]) / leftEdges.length;
+    // Calculate slope of right edge (negative = edges converge going down = perspective)
+    const rightSlope = (rightEdges[rightEdges.length - 1] - rightEdges[0]) / rightEdges.length;
+
+    // Difference in slopes indicates which direction wall is angled
+    // If left edge slants more to the right than right edge slants to the left -> wall faces right
+    const slopeDiff = leftSlope - rightSlope;
+
+    // Normalize by region width and convert to rotation angle
+    // Positive slopeDiff -> wall faces left (negative rotateY)
+    // Negative slopeDiff -> wall faces right (positive rotateY)
+    rotateY = -(slopeDiff / (regionRadius * 2)) * 60;
+  }
+
+  // Calculate rotateX from top/bottom edge width difference
+  // If top is narrower than bottom -> typical perspective (wall tilts back)
+  let rotateX = 0;
+  if (topEdges.length >= 2 && bottomEdges.length >= 2) {
+    // Average top and bottom widths at different scanlines
+    const topWidth = Math.max(...topEdges) - Math.min(...topEdges);
+    const bottomWidth = Math.max(...bottomEdges) - Math.min(...bottomEdges);
+
+    // Also consider vertical edge slopes
+    const topSlope = (topEdges[topEdges.length - 1] - topEdges[0]) / topEdges.length;
+    const bottomSlope = (bottomEdges[bottomEdges.length - 1] - bottomEdges[0]) / bottomEdges.length;
+
+    // If both slope downward: wall tilts back; if upward: wall tilts forward
+    const avgSlope = (topSlope + bottomSlope) / 2;
+
+    // Normalize and convert to rotation angle
+    rotateX = (avgSlope / regionRadius) * 40;
+  }
+
+  // Clamp to reasonable rotation limits
+  rotateX = Math.max(-30, Math.min(30, Math.round(rotateX * 10) / 10));
+  rotateY = Math.max(-40, Math.min(40, Math.round(rotateY * 10) / 10));
+
+  console.log(`[Segmentation] Mask-based orientation: rotateX=${rotateX}, rotateY=${rotateY}`);
+
+  return { rotateX, rotateY };
+}
+
+/**
+ * Point type for perspective calculations
+ */
+interface Point2D {
+  x: number;
+  y: number;
+}
+
+/**
+ * Calculate a CSS matrix3d transformation that warps a rectangle to an arbitrary quadrilateral.
+ * This allows the panel to conform to the wall's perspective shape.
+ *
+ * Uses homography (perspective transformation) mathematics to compute the transformation matrix.
+ *
+ * @param srcWidth - Width of the source rectangle (panel)
+ * @param srcHeight - Height of the source rectangle (panel)
+ * @param dstCorners - 4 corners of destination quadrilateral [topLeft, topRight, bottomRight, bottomLeft]
+ *                     in pixel coordinates relative to container
+ * @returns CSS matrix3d string for the transform property
+ */
+export function calculatePerspectiveTransformMatrix(
+  srcWidth: number,
+  srcHeight: number,
+  dstCorners: Point2D[],
+): string {
+  if (dstCorners.length !== 4) {
+    console.warn('[Segmentation] calculatePerspectiveTransformMatrix requires exactly 4 corners');
+    return 'none';
+  }
+
+  // Source corners: rectangle at origin
+  const srcCorners: Point2D[] = [
+    { x: 0, y: 0 },             // top-left
+    { x: srcWidth, y: 0 },      // top-right
+    { x: srcWidth, y: srcHeight }, // bottom-right
+    { x: 0, y: srcHeight },     // bottom-left
+  ];
+
+  // Compute the 3x3 homography matrix that maps srcCorners to dstCorners
+  const H = computeHomography(srcCorners, dstCorners);
+
+  if (!H) {
+    console.warn('[Segmentation] Failed to compute homography matrix');
+    return 'none';
+  }
+
+  // Convert 3x3 homography to CSS matrix3d (4x4 matrix flattened)
+  // CSS matrix3d format: matrix3d(a, b, 0, p, c, d, 0, q, 0, 0, 1, 0, tx, ty, 0, 1)
+  // But for proper perspective, we need the full transformation
+  const matrix3d = homographyToMatrix3d(H, srcWidth, srcHeight);
+
+  console.log('[Segmentation] Perspective matrix computed');
+  return matrix3d;
+}
+
+/**
+ * Compute the 3x3 homography matrix that maps 4 source points to 4 destination points.
+ * Uses the Direct Linear Transform (DLT) algorithm.
+ *
+ * @returns 3x3 matrix as a flat array [a, b, c, d, e, f, g, h, 1] (row-major)
+ */
+function computeHomography(src: Point2D[], dst: Point2D[]): number[] | null {
+  // Build the 8x8 matrix for solving the homography
+  // For each point correspondence, we have 2 equations:
+  // -src.x, -src.y, -1, 0, 0, 0, dst.x*src.x, dst.x*src.y, dst.x
+  // 0, 0, 0, -src.x, -src.y, -1, dst.y*src.x, dst.y*src.y, dst.y
+
+  const A: number[][] = [];
+  const b: number[] = [];
+
+  for (let i = 0; i < 4; i++) {
+    const sx = src[i].x;
+    const sy = src[i].y;
+    const dx = dst[i].x;
+    const dy = dst[i].y;
+
+    A.push([sx, sy, 1, 0, 0, 0, -dx * sx, -dx * sy]);
+    b.push(dx);
+
+    A.push([0, 0, 0, sx, sy, 1, -dy * sx, -dy * sy]);
+    b.push(dy);
+  }
+
+  // Solve using Gaussian elimination with partial pivoting
+  const solution = solveLinearSystem(A, b);
+
+  if (!solution) {
+    return null;
+  }
+
+  // The homography matrix H is:
+  // [ h0, h1, h2 ]
+  // [ h3, h4, h5 ]
+  // [ h6, h7, 1  ]
+  return [...solution, 1];
+}
+
+/**
+ * Solve a linear system Ax = b using Gaussian elimination with partial pivoting.
+ */
+function solveLinearSystem(A: number[][], b: number[]): number[] | null {
+  const n = A.length;
+
+  // Create augmented matrix
+  const aug: number[][] = A.map((row, i) => [...row, b[i]]);
+
+  // Forward elimination with partial pivoting
+  for (let col = 0; col < n; col++) {
+    // Find pivot
+    let maxRow = col;
+    let maxVal = Math.abs(aug[col][col]);
+
+    for (let row = col + 1; row < n; row++) {
+      if (Math.abs(aug[row][col]) > maxVal) {
+        maxVal = Math.abs(aug[row][col]);
+        maxRow = row;
+      }
+    }
+
+    if (maxVal < 1e-10) {
+      return null; // Singular matrix
+    }
+
+    // Swap rows
+    [aug[col], aug[maxRow]] = [aug[maxRow], aug[col]];
+
+    // Eliminate below
+    for (let row = col + 1; row < n; row++) {
+      const factor = aug[row][col] / aug[col][col];
+      for (let j = col; j <= n; j++) {
+        aug[row][j] -= factor * aug[col][j];
+      }
+    }
+  }
+
+  // Back substitution
+  const x: number[] = new Array(n).fill(0);
+  for (let i = n - 1; i >= 0; i--) {
+    x[i] = aug[i][n];
+    for (let j = i + 1; j < n; j++) {
+      x[i] -= aug[i][j] * x[j];
+    }
+    x[i] /= aug[i][i];
+  }
+
+  return x;
+}
+
+/**
+ * Convert a 3x3 homography matrix to a CSS matrix3d string.
+ * The matrix3d maps the source rectangle to the destination quadrilateral.
+ */
+function homographyToMatrix3d(H: number[], srcWidth: number, srcHeight: number): string {
+  // H is [h0, h1, h2, h3, h4, h5, h6, h7, 1] in row-major order
+  // Representing:
+  // [ h0, h1, h2 ]
+  // [ h3, h4, h5 ]
+  // [ h6, h7, 1  ]
+
+  // For CSS matrix3d, we need a 4x4 matrix in column-major order:
+  // matrix3d(m11, m21, m31, m41, m12, m22, m32, m42, m13, m23, m33, m43, m14, m24, m34, m44)
+  //
+  // The 3x3 homography embeds into 4x4 as:
+  // [ h0, h1, 0, h2 ]
+  // [ h3, h4, 0, h5 ]
+  // [ 0,  0,  1, 0  ]
+  // [ h6, h7, 0, 1  ]
+
+  const [h0, h1, h2, h3, h4, h5, h6, h7] = H;
+
+  // CSS matrix3d uses column-major order
+  const matrix = [
+    h0, h3, 0, h6,  // column 1
+    h1, h4, 0, h7,  // column 2
+    0, 0, 1, 0,     // column 3
+    h2, h5, 0, 1    // column 4
+  ];
+
+  return `matrix3d(${matrix.join(', ')})`;
+}
+
+/**
+ * Get the corner points of a detected rectangle in pixel coordinates.
+ * Converts normalized corners (0-1) to pixel coordinates.
+ *
+ * @param rectangle - The detected rectangle from segmentation
+ * @param containerWidth - Width of the container in pixels
+ * @param containerHeight - Height of the container in pixels
+ * @returns Array of 4 corners [TL, TR, BR, BL] in pixel coordinates
+ */
+export function getRectanglePixelCorners(
+  rectangle: { corners?: Point2D[]; boundingBox: { xmin: number; ymin: number; xmax: number; ymax: number } },
+  containerWidth: number,
+  containerHeight: number,
+): Point2D[] {
+  // If we have actual corners, use them
+  if (rectangle.corners && rectangle.corners.length === 4) {
+    return rectangle.corners.map(c => ({
+      x: c.x * containerWidth,
+      y: c.y * containerHeight,
+    }));
+  }
+
+  // Otherwise, create corners from bounding box
+  const { xmin, ymin, xmax, ymax } = rectangle.boundingBox;
+  return [
+    { x: xmin * containerWidth, y: ymin * containerHeight },  // TL
+    { x: xmax * containerWidth, y: ymin * containerHeight },  // TR
+    { x: xmax * containerWidth, y: ymax * containerHeight },  // BR
+    { x: xmin * containerWidth, y: ymax * containerHeight },  // BL
+  ];
 }

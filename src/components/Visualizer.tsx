@@ -15,6 +15,7 @@ import {
   Crosshair,
   Split,
   GripVertical,
+  Grid3X3,
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { cn } from "@/lib/utils";
@@ -30,6 +31,9 @@ import {
   isPointOnWall,
   findBestRectangleForPanel,
   fitPanelToRectangle,
+  calculateWallOrientationFromMask,
+  calculatePerspectiveTransformMatrix,
+  getRectanglePixelCorners,
 } from "@/lib/segmentationService";
 
 type Step =
@@ -92,6 +96,12 @@ export function Visualizer() {
   const [showCompareMode, setShowCompareMode] = useState(false);
   const [comparePos, setComparePos] = useState(50);
   const [isDraggingSlider, setIsDraggingSlider] = useState(false);
+
+  // Fill mode state - tiles panel across the entire wall
+  const [fillMode, setFillMode] = useState(false);
+
+  // Selected wall index - tracks which wall the user clicked before selecting a panel
+  const [selectedWallIndex, setSelectedWallIndex] = useState<number | null>(null);
 
   // Just use the segmentation foreground mask directly - depth enhancement causes issues
   // The enhanced mask is disabled, we'll use wallSegmentation.foregroundMaskUrl directly
@@ -192,6 +202,8 @@ export function Visualizer() {
     setPanelTransform({ x: 0, y: 0, scale: 1 });
     setPanelRotation({ rotateX: 0, rotateY: 0 });
     setIsOnWall(false);
+    setFillMode(false);
+    setSelectedWallIndex(null);
     setStep("upload");
   }, []);
 
@@ -227,70 +239,22 @@ export function Visualizer() {
         );
       }
 
-      // Calculate perspective from depth gradient
-      if (depthMap) {
-        const { depthData, width: depthWidth, height: depthHeight } = depthMap;
-
-        // Sample depth at panel center
-        const centerDepth = sampleDepthAt(
-          depthData,
-          depthWidth,
-          depthHeight,
+      // Use wall mask shape for rotation (primary method)
+      // Depth is only used for sizing, not rotation
+      if (wallSegmentation && wallSegmentation.wallMask.length > 0) {
+        // Get rotation from wall mask shape analysis
+        const maskOrientation = calculateWallOrientationFromMask(
+          wallSegmentation.wallMask,
+          wallSegmentation.width,
+          wallSegmentation.height,
           normalizedX,
           normalizedY,
         );
-
-        // Sample depth at left and right edges of the panel to calculate horizontal tilt
-        const leftX = Math.max(0, normalizedX - normalizedPanelWidth / 2);
-        const rightX = Math.min(1, normalizedX + normalizedPanelWidth / 2);
-        const leftDepth = sampleDepthAt(
-          depthData,
-          depthWidth,
-          depthHeight,
-          leftX,
-          normalizedY,
-        );
-        const rightDepth = sampleDepthAt(
-          depthData,
-          depthWidth,
-          depthHeight,
-          rightX,
-          normalizedY,
-        );
-
-        // Sample depth at top and bottom edges for vertical tilt
-        const topY = Math.max(0, normalizedY - normalizedPanelHeight / 2);
-        const bottomY = Math.min(1, normalizedY + normalizedPanelHeight / 2);
-        const topDepth = sampleDepthAt(
-          depthData,
-          depthWidth,
-          depthHeight,
-          normalizedX,
-          topY,
-        );
-        const bottomDepth = sampleDepthAt(
-          depthData,
-          depthWidth,
-          depthHeight,
-          normalizedX,
-          bottomY,
-        );
-
-        // Calculate horizontal tilt (rotateY) based on left-right depth difference
-        // If right side is closer (higher depth), rotate panel to face right
-        const horizontalDepthDiff = rightDepth - leftDepth; // Inverted
-        // Multiply by a reduced factor to prevent wobbling (max ~30 degrees)
-        const rotateY = horizontalDepthDiff * 60;
-
-        // Calculate vertical tilt (rotateX) based on top-bottom depth difference
-        // If top is closer (higher depth), tilt panel backward
-        const verticalDepthDiff = topDepth - bottomDepth; // Inverted
-        const rotateX = verticalDepthDiff * 40;
 
         // Round to 1 decimal place to prevent micro-adjustments that cause wobbling
         return {
-          rotateX: Math.round(Math.max(-30, Math.min(30, rotateX)) * 10) / 10,
-          rotateY: Math.round(Math.max(-40, Math.min(40, rotateY)) * 10) / 10,
+          rotateX: Math.round(Math.max(-30, Math.min(30, maskOrientation.rotateX)) * 10) / 10,
+          rotateY: Math.round(Math.max(-40, Math.min(40, maskOrientation.rotateY)) * 10) / 10,
           scale: 1,
           onWall,
         };
@@ -348,6 +312,10 @@ export function Visualizer() {
     rotateY: 0,
   });
 
+  // Target wall corners for perspective warp (in pixel coordinates)
+  // When set, panel will be warped to conform to these corners instead of just rotating
+  const [targetWallCorners, setTargetWallCorners] = useState<{ x: number; y: number }[] | null>(null);
+
   // Calculate base panel size based on wall bounding box for proper scaling
   const getBasePanelSize = useCallback(() => {
     if (!containerRef.current) return { width: 150, height: 300 };
@@ -358,7 +326,7 @@ export function Visualizer() {
       ? panelDimensions.width / panelDimensions.height
       : 0.5;
 
-    // If we have wall segmentation, size panel to roughly fit the largest wall
+    // If we have wall segmentation, size panel to fill the largest wall while maintaining aspect ratio
     if (wallSegmentation && wallSegmentation.wallPlanes.length > 0) {
       // Find the largest wall plane
       const largestWall = wallSegmentation.wallPlanes.reduce(
@@ -370,18 +338,19 @@ export function Visualizer() {
       const wallBox = largestWall.boundingBox;
       const wallWidthPx = (wallBox.xmax - wallBox.xmin) * rect.width;
       const wallHeightPx = (wallBox.ymax - wallBox.ymin) * rect.height;
+      const wallAspectRatio = wallWidthPx / wallHeightPx;
 
-      // Size panel to fill ~80-90% of the wall, respecting panel aspect ratio
-      let targetWidth, targetHeight;
+      // Fit panel to fill wall while maintaining aspect ratio ("contain" logic)
+      let targetHeight, targetWidth;
 
-      // Fit by height first, then check if width overflows
-      targetHeight = wallHeightPx * 0.85;
-      targetWidth = targetHeight * panelAspectRatio;
-
-      // If width overflows wall, fit by width instead
-      if (targetWidth > wallWidthPx * 0.9) {
-        targetWidth = wallWidthPx * 0.9;
+      if (panelAspectRatio > wallAspectRatio) {
+        // Panel is wider than wall - constrain by width
+        targetWidth = wallWidthPx;
         targetHeight = targetWidth / panelAspectRatio;
+      } else {
+        // Panel is taller than wall - constrain by height
+        targetHeight = wallHeightPx;
+        targetWidth = targetHeight * panelAspectRatio;
       }
 
       return {
@@ -395,13 +364,19 @@ export function Visualizer() {
       const wallBox = wallSegmentation.wallBoundingBox;
       const wallWidthPx = (wallBox.xmax - wallBox.xmin) * rect.width;
       const wallHeightPx = (wallBox.ymax - wallBox.ymin) * rect.height;
+      const wallAspectRatio = wallWidthPx / wallHeightPx;
 
-      let targetHeight = wallHeightPx * 0.8;
-      let targetWidth = targetHeight * panelAspectRatio;
+      // Fit panel to fill wall while maintaining aspect ratio
+      let targetHeight, targetWidth;
 
-      if (targetWidth > wallWidthPx * 0.85) {
-        targetWidth = wallWidthPx * 0.85;
+      if (panelAspectRatio > wallAspectRatio) {
+        // Panel is wider than wall - constrain by width
+        targetWidth = wallWidthPx;
         targetHeight = targetWidth / panelAspectRatio;
+      } else {
+        // Panel is taller than wall - constrain by height
+        targetHeight = wallHeightPx;
+        targetWidth = targetHeight * panelAspectRatio;
       }
 
       return {
@@ -773,6 +748,10 @@ export function Visualizer() {
   const handleResetTransform = useCallback(() => {
     setPanelTransform({ x: 0, y: 0, scale: 1 });
     setPanelRotation({ rotateX: 0, rotateY: 0 });
+    setTargetWallCorners(null); // Clear perspective warp
+    setFillMode(false); // Exit fill mode
+    setSelectedPanel(null); // Clear the selected panel
+    setSelectedWallIndex(null); // Reset wall selection
   }, []);
 
   // Helper function to find a valid wall position within a rectangle (not on foreground)
@@ -854,13 +833,24 @@ export function Visualizer() {
       const rectangles =
         wallSegmentation.detectedRectangles?.length > 0
           ? wallSegmentation.detectedRectangles
-          : wallSegmentation.wallPlanes?.map((plane) => ({
-            center: { x: plane.centerX, y: plane.centerY },
-            boundingBox: plane.boundingBox,
-            width: plane.boundingBox.xmax - plane.boundingBox.xmin,
-            height: plane.boundingBox.ymax - plane.boundingBox.ymin,
-            area: plane.area,
-          })) || [];
+          : wallSegmentation.wallPlanes?.map((plane) => {
+            const width = plane.boundingBox.xmax - plane.boundingBox.xmin;
+            const height = plane.boundingBox.ymax - plane.boundingBox.ymin;
+            return {
+              center: { x: plane.centerX, y: plane.centerY },
+              boundingBox: plane.boundingBox,
+              width,
+              height,
+              area: plane.area,
+              aspectRatio: width / height,
+              corners: [
+                { x: plane.boundingBox.xmin, y: plane.boundingBox.ymin },
+                { x: plane.boundingBox.xmax, y: plane.boundingBox.ymin },
+                { x: plane.boundingBox.xmax, y: plane.boundingBox.ymax },
+                { x: plane.boundingBox.xmin, y: plane.boundingBox.ymax },
+              ],
+            };
+          }) || [];
 
       if (!rectangles || rectangleIndex >= rectangles.length) {
         return;
@@ -878,17 +868,18 @@ export function Visualizer() {
       const wallWidthPx = targetRect.width * rect.width;
       const wallHeightPx = targetRect.height * rect.height;
 
-      // Fit panel exactly inside the wall while maintaining aspect ratio
+      // Fit panel to fill the wall while maintaining aspect ratio
+      // Use "contain" logic: maximize size while staying within wall bounds
       let targetWidth: number;
       let targetHeight: number;
 
       if (panelAspectRatio > wallAspectRatio) {
-        // Panel is wider than wall - fit by width
-        targetWidth = wallWidthPx; // Fill wall width completely
+        // Panel is wider than wall - constrain by width
+        targetWidth = wallWidthPx;
         targetHeight = targetWidth / panelAspectRatio;
       } else {
-        // Panel is taller than wall - fit by height
-        targetHeight = wallHeightPx; // Fill wall height completely
+        // Panel is taller than wall - constrain by height
+        targetHeight = wallHeightPx;
         targetWidth = targetHeight * panelAspectRatio;
       }
 
@@ -940,13 +931,7 @@ export function Visualizer() {
         const panelAspectRatio = dims.width / dims.height;
 
         if (wallSegmentation) {
-          // Fallback logic mostly matches getBasePanelSize but tailored for this moment
-          // If we have detectedRectangles (which we do if we are here), we are fitting to one of them.
-          // getBasePanelSize usually looks at the largest wall or bounding box.
-          // To be 100% consistent with standard Snap, we should trust getBasePanelSize IF state was updated,
-          // but state isn't updated yet.
-
-          // So we compute what getBasePanelSize WOULD return for this panel
+          // Compute what getBasePanelSize WOULD return for this panel
           const largestWall = wallSegmentation.wallPlanes.reduce(
             (largest, plane) => (plane.area > largest.area ? plane : largest),
             wallSegmentation.wallPlanes[0],
@@ -955,13 +940,16 @@ export function Visualizer() {
             const wallBox = largestWall.boundingBox;
             const wallWidthPx = (wallBox.xmax - wallBox.xmin) * rect.width;
             const wallHeightPx = (wallBox.ymax - wallBox.ymin) * rect.height;
+            const wallAspectRatio = wallWidthPx / wallHeightPx;
 
-            let targetHeight = wallHeightPx * 0.85;
-            let targetWidth = targetHeight * panelAspectRatio;
-
-            if (targetWidth > wallWidthPx * 0.9) {
-              targetWidth = wallWidthPx * 0.9;
+            // Fit panel to fill wall while maintaining aspect ratio
+            let targetHeight, targetWidth;
+            if (panelAspectRatio > wallAspectRatio) {
+              targetWidth = wallWidthPx;
               targetHeight = targetWidth / panelAspectRatio;
+            } else {
+              targetHeight = wallHeightPx;
+              targetWidth = targetHeight * panelAspectRatio;
             }
             baseSizeHeight = Math.max(150, targetHeight);
           }
@@ -979,7 +967,11 @@ export function Visualizer() {
         scale: Math.max(0.3, Math.min(5, newScale)),
       });
 
-      // Update rotation based on wall plane
+      // Clear any existing wall corner warp - panel should maintain its aspect ratio
+      // and not be warped to fill the wall shape
+      setTargetWallCorners(null);
+
+      // Update rotation based on wall plane (for subtle perspective effect)
       const perspective = calculateWallAwarePerspective(
         targetX + targetWidth / 2,
         targetY + targetHeight / 2,
@@ -1021,13 +1013,24 @@ export function Visualizer() {
     const rectangles =
       wallSegmentation.detectedRectangles?.length > 0
         ? wallSegmentation.detectedRectangles
-        : wallSegmentation.wallPlanes?.map((plane) => ({
-          center: { x: plane.centerX, y: plane.centerY },
-          boundingBox: plane.boundingBox,
-          width: plane.boundingBox.xmax - plane.boundingBox.xmin,
-          height: plane.boundingBox.ymax - plane.boundingBox.ymin,
-          area: plane.area,
-        })) || [];
+        : wallSegmentation.wallPlanes?.map((plane) => {
+          const width = plane.boundingBox.xmax - plane.boundingBox.xmin;
+          const height = plane.boundingBox.ymax - plane.boundingBox.ymin;
+          return {
+            center: { x: plane.centerX, y: plane.centerY },
+            boundingBox: plane.boundingBox,
+            width,
+            height,
+            area: plane.area,
+            aspectRatio: width / height,
+            corners: [
+              { x: plane.boundingBox.xmin, y: plane.boundingBox.ymin },
+              { x: plane.boundingBox.xmax, y: plane.boundingBox.ymin },
+              { x: plane.boundingBox.xmax, y: plane.boundingBox.ymax },
+              { x: plane.boundingBox.xmin, y: plane.boundingBox.ymax },
+            ],
+          };
+        }) || [];
 
     if (!rectangles || rectangles.length === 0) {
       toast.error("No rectangular wall areas detected");
@@ -1059,21 +1062,22 @@ export function Visualizer() {
     console.log("[Snap] Best rectangle:", bestRect);
     console.log("[Snap] Container size:", rect.width, rect.height);
 
-    // Calculate target dimensions in pixels - fit panel exactly inside wall
+    // Calculate target dimensions in pixels - fit panel to fill wall while maintaining aspect ratio
     const wallWidthPx = bestRect.width * rect.width;
     const wallHeightPx = bestRect.height * rect.height;
-    const wallAspectRatio = bestRect.width / bestRect.height;
+    const wallAspectRatio = wallWidthPx / wallHeightPx;
 
     let targetWidth: number;
     let targetHeight: number;
 
+    // Fit panel to fill wall while maintaining aspect ratio ("contain" logic)
     if (panelAspectRatio > wallAspectRatio) {
-      // Panel is wider than wall - fit by width
-      targetWidth = wallWidthPx; // Fill wall width completely
+      // Panel is wider than wall - constrain by width
+      targetWidth = wallWidthPx;
       targetHeight = targetWidth / panelAspectRatio;
     } else {
-      // Panel is taller than wall - fit by height
-      targetHeight = wallHeightPx; // Fill wall height completely
+      // Panel is taller than wall - constrain by height
+      targetHeight = wallHeightPx;
       targetWidth = targetHeight * panelAspectRatio;
     }
 
@@ -1196,7 +1200,10 @@ export function Visualizer() {
     (panel: WallPanel) => {
       setSelectedPanel(panel);
 
-      // If we have wall segmentation, try to position panel on the first detected wall (Wall 1)
+      // Determine which wall to place on: use selectedWallIndex if set, otherwise default to wall 0
+      const targetWallIndex = selectedWallIndex ?? 0;
+
+      // If we have wall segmentation, position panel on the target wall
       if (
         wallSegmentation &&
         containerRef.current &&
@@ -1212,9 +1219,11 @@ export function Visualizer() {
             height: img.naturalHeight,
             loaded: true
           };
-          // Snap to first rectangle (index 0) using this panel and these dimensions
-          handleSnapToRectangle(0, panel, dims);
-          toast.success(`${panel.name} placed on Wall 1!`);
+          // Snap to target wall using this panel and these dimensions
+          handleSnapToRectangle(targetWallIndex, panel, dims);
+          toast.success(`${panel.name} placed on Wall ${targetWallIndex + 1}!`);
+          // Clear the selected wall index after placing
+          setSelectedWallIndex(null);
         };
         img.src = panel.textureUrl;
         return;
@@ -1252,7 +1261,7 @@ export function Visualizer() {
         );
       }
     },
-    [wallSegmentation, handleSnapToRectangle],
+    [wallSegmentation, handleSnapToRectangle, selectedWallIndex],
   );
 
   const handleDownload = useCallback(async () => {
@@ -1422,6 +1431,28 @@ export function Visualizer() {
     panelRotation,
   ]);
 
+  // Toggle fill mode - tiles panel across the entire wall
+  const handleFillWall = useCallback(() => {
+    if (!wallSegmentation || !wallSegmentation.cssMaskUrl) {
+      toast.error("No wall detected to fill");
+      return;
+    }
+    if (!selectedPanel) {
+      toast.error("Please select a panel first");
+      return;
+    }
+    
+    setFillMode(prev => {
+      const newMode = !prev;
+      if (newMode) {
+        toast.success("Fill mode enabled - panel tiles across wall");
+      } else {
+        toast.info("Fill mode disabled");
+      }
+      return newMode;
+    });
+  }, [wallSegmentation, selectedPanel]);
+
   const handleReset = useCallback(() => {
     handleClearImage();
   }, [handleClearImage]);
@@ -1584,6 +1615,16 @@ export function Visualizer() {
                         Snap
                       </Button>
                       <Button
+                        variant={fillMode ? "default" : "minimal"}
+                        size="sm"
+                        onClick={handleFillWall}
+                        disabled={!wallSegmentation?.cssMaskUrl}
+                        title="Fill entire wall with tiled panel pattern"
+                      >
+                        <Grid3X3 className="w-4 h-4 mr-1" />
+                        Fill
+                      </Button>
+                      <Button
                         variant="minimal"
                         size="sm"
                         onClick={handleResetTransform}
@@ -1682,24 +1723,34 @@ export function Visualizer() {
                       )}
 
                       {/* Wall selection buttons - show circle buttons at center of each detected wall */}
-                      {selectedPanel &&
-                        wallSegmentation &&
+                      {wallSegmentation &&
                         (() => {
                           // Use detectedRectangles if available, otherwise fallback to wallPlanes
                           const rectangles =
                             wallSegmentation.detectedRectangles?.length > 0
                               ? wallSegmentation.detectedRectangles
-                              : wallSegmentation.wallPlanes?.map((plane) => ({
-                                center: { x: plane.centerX, y: plane.centerY },
-                                boundingBox: plane.boundingBox,
-                                width:
+                              : wallSegmentation.wallPlanes?.map((plane) => {
+                                const width =
                                   plane.boundingBox.xmax -
-                                  plane.boundingBox.xmin,
-                                height:
+                                  plane.boundingBox.xmin;
+                                const height =
                                   plane.boundingBox.ymax -
-                                  plane.boundingBox.ymin,
-                                area: plane.area,
-                              })) || [];
+                                  plane.boundingBox.ymin;
+                                return {
+                                  center: { x: plane.centerX, y: plane.centerY },
+                                  boundingBox: plane.boundingBox,
+                                  width,
+                                  height,
+                                  area: plane.area,
+                                  aspectRatio: width / height,
+                                  corners: [
+                                    { x: plane.boundingBox.xmin, y: plane.boundingBox.ymin },
+                                    { x: plane.boundingBox.xmax, y: plane.boundingBox.ymin },
+                                    { x: plane.boundingBox.xmax, y: plane.boundingBox.ymax },
+                                    { x: plane.boundingBox.xmin, y: plane.boundingBox.ymax },
+                                  ],
+                                };
+                              }) || [];
 
                           console.log(
                             `[Visualizer] Wall buttons: ${rectangles.length} rectangles available`,
@@ -1712,16 +1763,31 @@ export function Visualizer() {
                               {rectangles.map((rect, index) => {
                                 // Find a valid position on the wall (not blocked by foreground)
                                 const validPos = findValidWallPosition(rect);
+                                const isSelected = selectedWallIndex === index;
                                 return (
                                   <button
                                     key={index}
-                                    onClick={() => handleSnapToRectangle(index)}
-                                    className="absolute w-10 h-10 -translate-x-1/2 -translate-y-1/2 rounded-full bg-anthracite/80 hover:bg-anthracite text-white border-2 border-white shadow-lg pointer-events-auto transition-all duration-200 hover:scale-110 flex items-center justify-center text-sm font-semibold"
+                                    onClick={() => {
+                                      if (selectedPanel) {
+                                        // Panel already selected, snap to this wall
+                                        handleSnapToRectangle(index);
+                                      } else {
+                                        // No panel yet, remember which wall was clicked
+                                        setSelectedWallIndex(index);
+                                        toast.info(`Wall ${index + 1} selected. Now choose a panel.`);
+                                      }
+                                    }}
+                                    className={cn(
+                                      "absolute w-10 h-10 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 shadow-lg pointer-events-auto transition-all duration-200 hover:scale-110 flex items-center justify-center text-sm font-semibold",
+                                      isSelected
+                                        ? "bg-green-500 hover:bg-green-600 text-white border-white scale-110"
+                                        : "bg-anthracite/80 hover:bg-anthracite text-white border-white"
+                                    )}
                                     style={{
                                       left: `${validPos.x * 100}%`,
                                       top: `${validPos.y * 100}%`,
                                     }}
-                                    title={`Place panel on wall ${index + 1}`}
+                                    title={selectedPanel ? `Place panel on wall ${index + 1}` : `Select wall ${index + 1}`}
                                   >
                                     {index + 1}
                                   </button>
@@ -1731,20 +1797,63 @@ export function Visualizer() {
                           );
                         })()}
 
-                      {/* Draggable panel overlay */}
-                      {selectedPanel && panelDimensions.loaded && (
+                      {/* Tiled panel fill mode - tiles panel across entire wall mask */}
+                      {selectedPanel && panelDimensions.loaded && fillMode && wallSegmentation?.cssMaskUrl && (
+                        <div 
+                          className="absolute inset-0 pointer-events-none"
+                          style={{
+                            WebkitMaskImage: `url(${wallSegmentation.cssMaskUrl})`,
+                            maskImage: `url(${wallSegmentation.cssMaskUrl})`,
+                            WebkitMaskSize: "100% 100%",
+                            maskSize: "100% 100%",
+                            WebkitMaskRepeat: "no-repeat",
+                            maskRepeat: "no-repeat",
+                          }}
+                        >
+                          <div 
+                            className="w-full h-full"
+                            style={{
+                              backgroundImage: `url(${selectedPanel.textureUrl})`,
+                              backgroundSize: `${scaledPanelWidth}px ${scaledPanelHeight}px`,
+                              backgroundRepeat: "repeat",
+                              filter: `brightness(${1 - depthAtPanel * 0.15})`,
+                            }}
+                          />
+                        </div>
+                      )}
+
+                      {/* Draggable panel overlay - single panel mode */}
+                      {selectedPanel && panelDimensions.loaded && !fillMode && (
                         <div className="absolute inset-0 pointer-events-none overflow-hidden">
                           <div
                             className={cn(
-                              "absolute origin-center pointer-events-auto",
+                              "absolute pointer-events-auto",
                               isDragging ? "cursor-grabbing" : "cursor-grab",
                             )}
                             style={{
-                              left: panelTransform.x,
-                              top: panelTransform.y,
-                              width: scaledPanelWidth,
-                              height: scaledPanelHeight,
-                              transform: `rotateX(${panelRotation.rotateX}deg) rotateY(${panelRotation.rotateY}deg)`,
+                              // When we have wall corners, use perspective warp (panel conforms to wall shape)
+                              // Otherwise use standard rotation transform
+                              ...(targetWallCorners ? {
+                                // For perspective warp: position at origin, let matrix handle placement
+                                left: 0,
+                                top: 0,
+                                width: scaledPanelWidth,
+                                height: scaledPanelHeight,
+                                transformOrigin: '0 0',
+                                transform: calculatePerspectiveTransformMatrix(
+                                  scaledPanelWidth,
+                                  scaledPanelHeight,
+                                  targetWallCorners,
+                                ),
+                              } : {
+                                // Standard rotation transform
+                                left: panelTransform.x,
+                                top: panelTransform.y,
+                                width: scaledPanelWidth,
+                                height: scaledPanelHeight,
+                                transformOrigin: 'center',
+                                transform: `rotateX(${panelRotation.rotateX}deg) rotateY(${panelRotation.rotateY}deg)`,
+                              }),
                               transformStyle: "preserve-3d",
                               // Use faster transition with ease-out for smoother feel, no transition while dragging
                               transition: isDragging
@@ -1757,7 +1866,7 @@ export function Visualizer() {
                             <img
                               src={selectedPanel.textureUrl}
                               alt={selectedPanel.name}
-                              className="w-full h-full object-contain pointer-events-none"
+                              className="w-full h-full object-cover pointer-events-none"
                               draggable={false}
                               style={{
                                 filter: `brightness(${1 - depthAtPanel * 0.15})`,
@@ -1845,17 +1954,7 @@ export function Visualizer() {
                       className="absolute inset-0 pointer-events-none opacity-0"
                     />
 
-                    {/* Instruction overlay when no panel selected */}
-                    {!selectedPanel && (
-                      <div className="absolute inset-0 flex items-center justify-center bg-black/30">
-                        <div className="text-center text-white p-6 rounded-xl bg-black/50 backdrop-blur-sm">
-                          <ArrowRight className="w-8 h-8 mx-auto mb-2 animate-pulse" />
-                          <p className="text-lg font-medium">
-                            Select a panel from the right
-                          </p>
-                        </div>
-                      </div>
-                    )}
+
                   </div>
 
                   {/* Transform info */}

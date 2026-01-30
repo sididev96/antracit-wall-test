@@ -20,6 +20,17 @@ interface WallTextureOptions {
   applyDepthShading?: boolean;
   /** Whether to apply perspective distortion (default: true) */
   applyPerspective?: boolean;
+  /** 
+   * Whether to maintain the panel's aspect ratio when tiling (default: true)
+   * When true, the panel tiles maintain their natural proportions
+   * When false, panels stretch to fill available space
+   */
+  maintainAspectRatio?: boolean;
+  /**
+   * Number of panel tiles to fit vertically on the wall (default: auto-calculated)
+   * Higher values = smaller individual panels, more repetition
+   */
+  tilesPerWallHeight?: number;
 }
 
 /**
@@ -410,6 +421,8 @@ export async function applyTextureToWallMask(
     blendOpacity = 0.92,
     applyDepthShading = true,
     applyPerspective = true,
+    maintainAspectRatio = true,
+    tilesPerWallHeight,
   } = options;
 
   // Load original image
@@ -461,9 +474,47 @@ export async function applyTextureToWallMask(
   const depthScaleX = hasDepth ? depthWidth! / imgWidth : 1;
   const depthScaleY = hasDepth ? depthHeight! / imgHeight : 1;
 
-  // Calculate tile size in pixels (scaled texture)
-  const tileWidth = texWidth / textureScale;
-  const tileHeight = texHeight / textureScale;
+  // Calculate the panel's aspect ratio
+  const panelAspectRatio = texWidth / texHeight;
+
+  // Find the wall bounding box to properly size the panels
+  let wallMinX = imgWidth, wallMaxX = 0, wallMinY = imgHeight, wallMaxY = 0;
+  for (let y = 0; y < imgHeight; y += 10) {
+    for (let x = 0; x < imgWidth; x += 10) {
+      const mx = Math.floor(x * maskScaleX);
+      const my = Math.floor(y * maskScaleY);
+      const maskIdx = my * maskWidth + mx;
+      if (wallMask[maskIdx] > 0) {
+        wallMinX = Math.min(wallMinX, x);
+        wallMaxX = Math.max(wallMaxX, x);
+        wallMinY = Math.min(wallMinY, y);
+        wallMaxY = Math.max(wallMaxY, y);
+      }
+    }
+  }
+  
+  const wallHeight = Math.max(1, wallMaxY - wallMinY);
+  const wallWidth = Math.max(1, wallMaxX - wallMinX);
+
+  // Calculate tile dimensions while maintaining aspect ratio
+  let tileWidth: number;
+  let tileHeight: number;
+  
+  if (maintainAspectRatio) {
+    // Determine how many tiles should fit vertically on the wall
+    // Default: calculate based on textureScale to give reasonable panel size
+    const numTilesVertical = tilesPerWallHeight ?? Math.max(1, Math.round(1 / textureScale));
+    
+    // Calculate the tile height to fit the desired number of tiles in the wall height
+    tileHeight = wallHeight / numTilesVertical;
+    
+    // Calculate tile width to maintain the panel's aspect ratio
+    tileWidth = tileHeight * panelAspectRatio;
+  } else {
+    // Original behavior: scale independently (may distort aspect ratio)
+    tileWidth = texWidth / textureScale;
+    tileHeight = texHeight / textureScale;
+  }
 
   // Helper to get depth at a point
   const getDepthAt = (x: number, y: number): number => {
