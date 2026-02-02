@@ -489,6 +489,53 @@ export function Visualizer() {
     depthAtPanel,
   ]);
 
+  // Helper function to check if the panel would be fully within the wall mask at a given position
+  const isPanelOnWall = useCallback(
+    (panelX: number, panelY: number, panelW: number, panelH: number): boolean => {
+      if (!wallSegmentation || wallSegmentation.wallMask.length === 0 || !containerRef.current) {
+        return true; // No wall mask, allow all positions
+      }
+
+      const container = containerRef.current;
+      const rect = container.getBoundingClientRect();
+      const { wallMask, width, height } = wallSegmentation;
+
+      // Check multiple points on the panel: center, corners, and edge midpoints
+      const pointsToCheck = [
+        // Center
+        { x: panelX + panelW / 2, y: panelY + panelH / 2 },
+        // Corners (slightly inset to avoid edge detection issues)
+        { x: panelX + panelW * 0.1, y: panelY + panelH * 0.1 },
+        { x: panelX + panelW * 0.9, y: panelY + panelH * 0.1 },
+        { x: panelX + panelW * 0.9, y: panelY + panelH * 0.9 },
+        { x: panelX + panelW * 0.1, y: panelY + panelH * 0.9 },
+        // Edge midpoints
+        { x: panelX + panelW / 2, y: panelY + panelH * 0.1 },
+        { x: panelX + panelW / 2, y: panelY + panelH * 0.9 },
+        { x: panelX + panelW * 0.1, y: panelY + panelH / 2 },
+        { x: panelX + panelW * 0.9, y: panelY + panelH / 2 },
+      ];
+
+      // Check if ALL points are on the wall
+      for (const point of pointsToCheck) {
+        const normalizedX = point.x / rect.width;
+        const normalizedY = point.y / rect.height;
+
+        // Skip points outside the image bounds
+        if (normalizedX < 0 || normalizedX > 1 || normalizedY < 0 || normalizedY > 1) {
+          return false; // Point is outside image, not on wall
+        }
+
+        if (!isPointOnWall(wallMask, width, height, normalizedX, normalizedY)) {
+          return false; // At least one point is not on wall
+        }
+      }
+
+      return true; // All points are on wall
+    },
+    [wallSegmentation],
+  );
+
   // Drag handlers
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
@@ -516,43 +563,22 @@ export function Visualizer() {
         wallSegmentation.wallMask.length > 0 &&
         containerRef.current
       ) {
-        const container = containerRef.current;
-        const rect = container.getBoundingClientRect();
+        // Check if the entire panel would be on the wall at the new position
+        const wouldBeOnWall = isPanelOnWall(newX, newY, scaledPanelWidth, scaledPanelHeight);
 
-        // Calculate where the panel center would be
-        const panelCenterX = newX + scaledPanelWidth / 2;
-        const panelCenterY = newY + scaledPanelHeight / 2;
-
-        // Normalize to 0-1 range
-        const normalizedX = panelCenterX / rect.width;
-        const normalizedY = panelCenterY / rect.height;
-
-        // Check if the new position is on a wall
-        const wouldBeOnWall = isPointOnWall(
-          wallSegmentation.wallMask,
-          wallSegmentation.width,
-          wallSegmentation.height,
-          normalizedX,
-          normalizedY,
+        // Check if currently on wall
+        const currentlyOnWall = isPanelOnWall(
+          panelTransform.x,
+          panelTransform.y,
+          scaledPanelWidth,
+          scaledPanelHeight,
         );
 
-        // Check current position
-        const currentCenterX = panelTransform.x + scaledPanelWidth / 2;
-        const currentCenterY = panelTransform.y + scaledPanelHeight / 2;
-        const currentNormalizedX = currentCenterX / rect.width;
-        const currentNormalizedY = currentCenterY / rect.height;
-        const currentlyOnWall = isPointOnWall(
-          wallSegmentation.wallMask,
-          wallSegmentation.width,
-          wallSegmentation.height,
-          currentNormalizedX,
-          currentNormalizedY,
-        );
-
+        // Block movement if:
+        // - Currently on wall AND new position would not be fully on wall
         // Allow movement if:
-        // 1. Moving TO a wall position (always allowed)
-        // 2. Currently NOT on wall (allow escape from stuck positions)
-        // Block only if: currently on wall AND trying to move to non-wall
+        // - Moving TO a fully on-wall position (always allowed)
+        // - Currently NOT fully on wall (allow escape from stuck positions)
         if (!wouldBeOnWall && currentlyOnWall) {
           // Block movement from wall to non-wall
           return;
@@ -573,6 +599,7 @@ export function Visualizer() {
       scaledPanelHeight,
       panelTransform.x,
       panelTransform.y,
+      isPanelOnWall,
     ],
   );
 
@@ -609,43 +636,22 @@ export function Visualizer() {
         wallSegmentation.wallMask.length > 0 &&
         containerRef.current
       ) {
-        const container = containerRef.current;
-        const rect = container.getBoundingClientRect();
+        // Check if the entire panel would be on the wall at the new position
+        const wouldBeOnWall = isPanelOnWall(newX, newY, scaledPanelWidth, scaledPanelHeight);
 
-        // Calculate where the panel center would be
-        const panelCenterX = newX + scaledPanelWidth / 2;
-        const panelCenterY = newY + scaledPanelHeight / 2;
-
-        // Normalize to 0-1 range
-        const normalizedX = panelCenterX / rect.width;
-        const normalizedY = panelCenterY / rect.height;
-
-        // Check if the new position is on a wall
-        const wouldBeOnWall = isPointOnWall(
-          wallSegmentation.wallMask,
-          wallSegmentation.width,
-          wallSegmentation.height,
-          normalizedX,
-          normalizedY,
+        // Check if currently on wall
+        const currentlyOnWall = isPanelOnWall(
+          panelTransform.x,
+          panelTransform.y,
+          scaledPanelWidth,
+          scaledPanelHeight,
         );
 
-        // Check current position
-        const currentCenterX = panelTransform.x + scaledPanelWidth / 2;
-        const currentCenterY = panelTransform.y + scaledPanelHeight / 2;
-        const currentNormalizedX = currentCenterX / rect.width;
-        const currentNormalizedY = currentCenterY / rect.height;
-        const currentlyOnWall = isPointOnWall(
-          wallSegmentation.wallMask,
-          wallSegmentation.width,
-          wallSegmentation.height,
-          currentNormalizedX,
-          currentNormalizedY,
-        );
-
+        // Block movement if:
+        // - Currently on wall AND new position would not be fully on wall
         // Allow movement if:
-        // 1. Moving TO a wall position (always allowed)
-        // 2. Currently NOT on wall (allow escape from stuck positions)
-        // Block only if: currently on wall AND trying to move to non-wall
+        // - Moving TO a fully on-wall position (always allowed)
+        // - Currently NOT fully on wall (allow escape from stuck positions)
         if (!wouldBeOnWall && currentlyOnWall) {
           // Block movement from wall to non-wall
           return;
@@ -666,6 +672,7 @@ export function Visualizer() {
       scaledPanelHeight,
       panelTransform.x,
       panelTransform.y,
+      isPanelOnWall,
     ],
   );
 
@@ -1560,11 +1567,12 @@ export function Visualizer() {
           {step === "place-panel" && uploadedImage && (
             <div className="space-y-6">
               {/* Controls bar */}
-              <div className="flex items-center justify-between flex-wrap gap-3 p-4 bg-surface-elevated rounded-xl shadow-soft">
-                <div className="flex items-center gap-2">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-3 sm:p-4 bg-surface-elevated rounded-xl shadow-soft">
+                {/* Status indicator */}
+                <div className="flex items-center justify-center sm:justify-start">
                   <div
                     className={cn(
-                      "flex items-center gap-2 px-3 py-1.5 rounded-full text-sm",
+                      "flex items-center gap-2 px-3 py-2 sm:py-1.5 rounded-full text-sm font-medium",
                       selectedPanel
                         ? isOnWall
                           ? "bg-green-100 text-green-700"
@@ -1583,87 +1591,117 @@ export function Visualizer() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                {/* Control buttons */}
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                   {selectedPanel && (
                     <>
-                      <Button
-                        variant="minimal"
-                        size="sm"
-                        onClick={handleScaleDown}
-                      >
-                        <ZoomOut className="w-4 h-4" />
-                      </Button>
-                      <span className="text-sm text-muted-foreground min-w-[3rem] text-center">
-                        {Math.round(panelTransform.scale * 100)}%
-                      </span>
-                      <Button
-                        variant="minimal"
-                        size="sm"
-                        onClick={handleScaleUp}
-                      >
-                        <ZoomIn className="w-4 h-4" />
-                      </Button>
-                      <div className="w-px h-6 bg-border mx-2" />
-                      <Button
-                        variant="minimal"
-                        size="sm"
-                        onClick={handleSnapToWall}
-                        disabled={!wallSegmentation?.detectedRectangles?.length}
-                        title="Snap panel to detected wall area"
-                      >
-                        <Crosshair className="w-4 h-4 mr-1" />
-                        Snap
-                      </Button>
-                      <Button
-                        variant={fillMode ? "default" : "minimal"}
-                        size="sm"
-                        onClick={handleFillWall}
-                        disabled={!wallSegmentation?.cssMaskUrl}
-                        title="Fill entire wall with tiled panel pattern"
-                      >
-                        <Grid3X3 className="w-4 h-4 mr-1" />
-                        Fill
-                      </Button>
-                      <Button
-                        variant="minimal"
-                        size="sm"
-                        onClick={handleResetTransform}
-                      >
-                        <RotateCcw className="w-4 h-4 mr-1" />
-                        Reset
-                      </Button>
-                      <div className="w-px h-6 bg-border mx-2" />
+                      {/* Zoom controls */}
+                      <div className="flex items-center justify-center gap-2">
+                        <Button
+                          variant="minimal"
+                          size="sm"
+                          onClick={handleScaleDown}
+                          className="min-h-[44px] sm:min-h-0 flex-1 sm:flex-initial"
+                        >
+                          <ZoomOut className="w-4 h-4" />
+                        </Button>
+                        <span className="text-sm text-muted-foreground min-w-[3rem] text-center font-medium">
+                          {Math.round(panelTransform.scale * 100)}%
+                        </span>
+                        <Button
+                          variant="minimal"
+                          size="sm"
+                          onClick={handleScaleUp}
+                          className="min-h-[44px] sm:min-h-0 flex-1 sm:flex-initial"
+                        >
+                          <ZoomIn className="w-4 h-4" />
+                        </Button>
+                      </div>
+
+                      {/* Divider - hidden on mobile */}
+                      <div className="hidden sm:block w-px h-6 bg-border mx-1" />
+
+                      {/* Panel controls */}
+                      <div className="grid grid-cols-3 sm:flex sm:items-center gap-2">
+                        <Button
+                          variant="minimal"
+                          size="sm"
+                          onClick={handleSnapToWall}
+                          disabled={!wallSegmentation?.detectedRectangles?.length}
+                          title="Snap panel to detected wall area"
+                          className="min-h-[44px] sm:min-h-0"
+                        >
+                          <Crosshair className="w-4 h-4 sm:mr-1" />
+                          <span className="hidden xs:inline sm:inline">Snap</span>
+                        </Button>
+                        <Button
+                          variant={fillMode ? "default" : "minimal"}
+                          size="sm"
+                          onClick={handleFillWall}
+                          disabled={!wallSegmentation?.cssMaskUrl}
+                          title="Fill entire wall with tiled panel pattern"
+                          className="min-h-[44px] sm:min-h-0"
+                        >
+                          <Grid3X3 className="w-4 h-4 sm:mr-1" />
+                          <span className="hidden xs:inline sm:inline">Fill</span>
+                        </Button>
+                        <Button
+                          variant="minimal"
+                          size="sm"
+                          onClick={handleResetTransform}
+                          className="min-h-[44px] sm:min-h-0"
+                        >
+                          <RotateCcw className="w-4 h-4 sm:mr-1" />
+                          <span className="hidden xs:inline sm:inline">Reset</span>
+                        </Button>
+                      </div>
+
+                      {/* Divider - hidden on mobile */}
+                      <div className="hidden sm:block w-px h-6 bg-border mx-1" />
+
+                      {/* Download button */}
                       <Button
                         variant="hero"
                         size="sm"
                         onClick={handleDownload}
                         disabled={isProcessing}
                         title="Download visualization"
+                        className="min-h-[44px] sm:min-h-0"
                       >
                         {isProcessing ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <Loader2 className="w-4 h-4 animate-spin mr-2" />
                         ) : (
-                          <>
-                            <Download className="w-4 h-4 mr-1" />
-                            <span className="hidden sm:inline">Download</span>
-                          </>
+                          <Download className="w-4 h-4 mr-2" />
                         )}
+                        Download
                       </Button>
                     </>
                   )}
-                  <Button variant="minimal" size="sm" onClick={handleReset}>
-                    New Photo
-                  </Button>
-                  <div className="w-px h-6 bg-border mx-2" />
-                  <Button
-                    variant={showCompareMode ? "default" : "minimal"}
-                    size="sm"
-                    onClick={() => setShowCompareMode(!showCompareMode)}
-                    title="Toggle Before/After comparison"
-                  >
-                    <Split className="w-4 h-4 mr-1" />
-                    Compare
-                  </Button>
+
+                  {/* Divider - hidden on mobile, shown only when panel is selected */}
+                  {selectedPanel && <div className="hidden sm:block w-px h-6 bg-border mx-1" />}
+
+                  {/* Secondary controls */}
+                  <div className="grid grid-cols-2 sm:flex sm:items-center gap-2">
+                    <Button 
+                      variant="minimal" 
+                      size="sm" 
+                      onClick={handleReset}
+                      className="min-h-[44px] sm:min-h-0"
+                    >
+                      New Photo
+                    </Button>
+                    <Button
+                      variant={showCompareMode ? "default" : "minimal"}
+                      size="sm"
+                      onClick={() => setShowCompareMode(!showCompareMode)}
+                      title="Toggle Before/After comparison"
+                      className="min-h-[44px] sm:min-h-0"
+                    >
+                      <Split className="w-4 h-4 mr-2" />
+                      Compare
+                    </Button>
+                  </div>
                 </div>
               </div>
 
