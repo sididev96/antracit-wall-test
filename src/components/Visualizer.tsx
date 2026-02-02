@@ -1284,14 +1284,7 @@ export function Visualizer() {
       const container = containerRef.current;
       const rect = container.getBoundingClientRect();
 
-      canvas.width = rect.width;
-      canvas.height = rect.height;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        throw new Error("Failed to get canvas context");
-      }
-
-      // Load images
+      // Load images first to get original dimensions
       const loadImage = (src: string): Promise<HTMLImageElement> => {
         return new Promise((resolve, reject) => {
           const img = new Image();
@@ -1305,7 +1298,19 @@ export function Visualizer() {
       const bgImg = await loadImage(uploadedImage);
       const panelImg = await loadImage(selectedPanel.textureUrl);
 
-      // Draw background
+      // Use original image dimensions for high-quality export
+      canvas.width = bgImg.naturalWidth;
+      canvas.height = bgImg.naturalHeight;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        throw new Error("Failed to get canvas context");
+      }
+
+      // Calculate scale factor between display and original image
+      const scaleX = bgImg.naturalWidth / rect.width;
+      const scaleY = bgImg.naturalHeight / rect.height;
+
+      // Draw background at full resolution
       ctx.drawImage(bgImg, 0, 0, canvas.width, canvas.height);
 
       // If we have wall segmentation, clip the panel to wall areas
@@ -1338,9 +1343,15 @@ export function Visualizer() {
       // Save context state for panel transform
       ctx.save();
 
-      // Move to panel center
-      const centerX = panelTransform.x + scaledPanelWidth / 2;
-      const centerY = panelTransform.y + scaledPanelHeight / 2;
+      // Scale panel position and size to match original image dimensions
+      const scaledPanelX = panelTransform.x * scaleX;
+      const scaledPanelY = panelTransform.y * scaleY;
+      const fullResPanelWidth = scaledPanelWidth * scaleX;
+      const fullResPanelHeight = scaledPanelHeight * scaleY;
+
+      // Move to panel center (scaled to full resolution)
+      const centerX = scaledPanelX + fullResPanelWidth / 2;
+      const centerY = scaledPanelY + fullResPanelHeight / 2;
       ctx.translate(centerX, centerY);
 
       // Apply rotation (convert deg to rad)
@@ -1352,13 +1363,13 @@ export function Visualizer() {
       const skewY = Math.tan(rotXRad) * 0.3;
       ctx.transform(1, skewY, skewX, 1, 0, 0);
 
-      // Draw panel centered
+      // Draw panel centered at full resolution
       ctx.drawImage(
         panelImg,
-        -scaledPanelWidth / 2,
-        -scaledPanelHeight / 2,
-        scaledPanelWidth,
-        scaledPanelHeight,
+        -fullResPanelWidth / 2,
+        -fullResPanelHeight / 2,
+        fullResPanelWidth,
+        fullResPanelHeight,
       );
 
       // Restore panel transform context
